@@ -9,7 +9,9 @@
 // Memory map (Z80): 0000-9FFF fixed ROM, A000-BFFF banked window
 // (OUT A0 = bank[5:0], OUT B0 = {b1b0 -> bank[8:7], b2 -> bank[6]},
 // 8KB pages over the 4MB region), C000-DFFF RF5C68 window (external),
-// E000-FFFF shared RAM (dual-ported to the V60 side).
+// E000-FFFF shared RAM (one single-port SRAM on the Z80 bus on the board,
+// which the V60 reaches by taking the Z80's bus: see "Bus takeover" and
+// "shared RAM" below).
 // I/O: 80-8F YM1, 90-9F YM2, A0-AF/B0-BF bank, C0-CF int-lo,
 // D0-D7 int-hi (D0-D3 mirrored at D4-D7; D8-DF unknown, writes dropped),
 // F1 dummy.
@@ -46,6 +48,11 @@ module s32_sound (
                                       // (schematic)
 
     // V60-side shared RAM port (byte, 8KB)
+    // shm_req/shm_gnt: the 315-5385's takeover of the Z80 bus (sheet 7/9:
+    // /ZBRQ -> Z80 /BUSRQ, /BUSAK -> /ZBAK). The V60 side holds shm_req
+    // for the whole access and strobes only once shm_gnt is high.
+    input  logic        shm_req,
+    output logic        shm_gnt,
     input  logic        shm_sel,
     input  logic        shm_we,
     input  logic [12:0] shm_addr,
@@ -75,10 +82,28 @@ module s32_sound (
     logic [15:0] A;
     logic [7:0]  di, dout;
 
+    // Bus takeover (OPEN-QUESTIONS Q65). The shared RAM is one single-port
+    // SRAM on the Z80's bus (IC16, sheet 7/9), and the V60's address
+    // reaches that bus only through the IC15/IC14 buffers, so a V60 access
+    // must wait until the Z80 has released the bus: /BUSRQ in, /BUSAK out.
+    // tv80 samples /BUSRQ on cen and grants at the end of the machine
+    // cycle in progress (T_Res), as a Z80 does at the last T-state, then
+    // stays stopped until the request drops. That latency (about 1 to 7
+    // Z80 T-states) is the whole modelled cost: the 315-5385's own
+    // overhead is unknown and taken as zero, so this is a lower bound.
+    //   Under sound reset (CNT bit 2 low, rst high) a Z80 drives no
+    // /BUSAK, but it also floats its buses; whether the 315-5385 then
+    // waits forever is not known, so the grant is given at once, as
+    // before this change (no hang). The RAM itself stays the dual-port
+    // M10K below: the handshake supplies the timing, the RAM block is an
+    // implementation detail (the Z80 is stopped whenever the V60 port is
+    // live, so the two ports are never used at once outside reset).
+    assign shm_gnt = !busak_n || rst;
+
     // cen paces the Z80 (8.054 MHz from s32_sys)
     tv80s u_z80 (
         .reset_n(!rst), .clk(clk), .cen_in(cen),
-        .wait_n(1'b1), .int_n(int_n), .nmi_n(1'b1), .busrq_n(1'b1),
+        .wait_n(1'b1), .int_n(int_n), .nmi_n(1'b1), .busrq_n(!shm_req),
         .m1_n(m1_n), .mreq_n(mreq_n), .iorq_n(iorq_n),
         .rd_n(rd_n), .wr_n(wr_n), .rfsh_n(rfsh_n),
         .halt_n(halt_n), .busak_n(busak_n),
@@ -97,9 +122,14 @@ module s32_sound (
     // ------------------------------------------------------- shared RAM
     // Synchronous reads on both ports, so it maps to a RAM block; a tv80
     // read cycle spans several clocks, so the registered data is in time.
-    // One true dual-port M10K serves both CPUs, like the real dual-port
-    // RAM. It is the explicit s32_tdp: the save/restore address mux on
-    // port B would make Quartus 17 build it from registers.
+    // One true dual-port M10K serves both CPUs. The real board has a
+    // single-port 8K SRAM (IC16, sheet 7/9) on the Z80's bus, which the
+    // V60 reaches only by taking that bus through the 315-5385's
+    // /BUSRQ -> /BUSAK handshake. The handshake is modelled above
+    // (shm_req/shm_gnt), so the Z80 is stopped whenever port B serves the
+    // V60 (OPEN-QUESTIONS Q65). It is the explicit s32_tdp: the
+    // save/restore address mux on port B would make Quartus 17 build it
+    // from registers.
     // Port A = Z80, port B = fabric + idle-cycle NVRAM grant. The
     // grant shadow keeps nv off the port for two cycles after any
     // fabric strobe, so q_b is stable through the fabric's strobe+2

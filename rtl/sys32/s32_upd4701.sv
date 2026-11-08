@@ -15,9 +15,12 @@
 //   lower byte = count[7:0]
 //   upper byte = {any-switch, left, right, middle, count[11:8]}
 // SegaSonic's buttons are on the 315-5296, not on these switch inputs, so the
-// switch bits read 0 (inputs inactive). The game reads only the lower bytes.
-// Any write resets both axes (MAME reset_xy_w; how the board decodes its
-// reset is Q50).
+// switch bits read 0 (inputs inactive), as MAME has them. The game reads only
+// the lower bytes. (A reproduction board's artwork ties pins 7-9 to GND, which
+// would read $F0 | count[11:8] by MAME's polarity; unconfirmed, Q50.)
+// A write resets both axes of this chip only: the board NORs its '138 write
+// output with /VLWR into RESET X and RESET Y together (Q50, 2026-11-07;
+// MAME reset_xy_w).
 //
 // The chip latches the counts when /CS falls. One V60 access is one /CS
 // assertion and the fabric samples rdata during it, so returning the live

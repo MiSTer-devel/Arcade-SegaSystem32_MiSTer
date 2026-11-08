@@ -360,6 +360,7 @@ module s32_sys (
     logic [15:0] sr_raddr, sr_rdata;
     logic        spr_rdw_collision, spr_rdw_collision_q;
     logic        spr_cen;
+    logic        shm_req, shm_gnt;  // Z80 bus takeover (s32_sound, Q65)
     logic        shm_sel, shm_we;
     logic [12:0] shm_addr;
     logic [7:0]  shm_wdata, shm_rdata;
@@ -514,6 +515,7 @@ module s32_sys (
         .sc_wdata(sc_wdata), .sc_bsel(sc_bsel), .sc_rdata(sc_rdata),
         .sr_re(sr_re), .sr_raddr(sr_raddr), .sr_rdata(sr_rdata),
         .spr_rdw_collision(spr_rdw_collision),
+        .shm_req(shm_req), .shm_gnt(shm_gnt),
         .shm_sel(shm_sel), .shm_we(shm_we), .shm_addr(shm_addr),
         .shm_wdata(shm_wdata), .shm_rdata(shm_rdata),
         .dp_sel(dpr_sel), .dp_we(dpr_we), .dp_addr(dpr_addr),
@@ -728,6 +730,7 @@ module s32_sys (
         .cen_z80(cen_z80 && !zrom_hold), .cen_fm(cen_z80),
         .cen_pcm(cen_pcm),
         .rom_addr(zrom_addr), .rom_data(zrom_data), .rom_rd(zrom_rd),
+        .shm_req(shm_req), .shm_gnt(shm_gnt),
         .shm_sel(shm_sel), .shm_we(shm_we), .shm_addr(shm_addr),
         .shm_wdata(shm_wdata), .shm_rdata(shm_rdata),
         .nv_sel(zram_nv_sel), .nv_we(zram_nv_we), .nv_addr(zram_nv_addr),

@@ -116,6 +116,10 @@ module s32_v60bus (
     output logic        spr_rdw_collision,
 
     // ---- sound shared RAM (8-bit)
+    // shm_req is held for the whole access; each byte strobe waits for
+    // shm_gnt (the Z80's /BUSAK, s32_sound "Bus takeover", Q65)
+    output logic        shm_req,
+    input  logic        shm_gnt,
     output logic        shm_sel,
     output logic        shm_we,
     output logic [12:0] shm_addr,
@@ -512,6 +516,17 @@ module s32_v60bus (
                                      // keeps it off a deep timing path
 
     assign bus_hold = (ast != A_IDLE);
+
+    // Z80 bus takeover for the shared RAM (OPEN-QUESTIONS Q65). The RAM is
+    // a single-port SRAM on the Z80's bus (IC16, sheet 7/9), so the
+    // 315-5385 raises the Z80's /BUSRQ and the V60 cycle waits for /BUSAK.
+    // The request covers every byte lane of one access (a V60 word = two
+    // byte cycles on the Z80's bus, ZA0 from the 5385) and drops in
+    // A_IDLE. The wait is real board time (it extends T3 like /READY), so
+    // it is not wait_emul and the wait-debt clock does not repay it.
+    assign shm_req = (q_reg == R_SHM)
+                     && (ast == A_SUB_P || ast == A_SUB || ast == A_SUB_W
+                         || ast == A_SUB_L || ast == A_DONE);
     assign wait_emul = ((ast == A_ROMW) && (q_fetch ? romf_hold : romd_hold))
                      || ((ast == A_SUB_W) && vid_hold)
                      ;
@@ -1227,7 +1242,11 @@ module s32_v60bus (
                     ast <= A_IDLE;
                 end
 
-                A_SUB_P: begin             // register the port outputs
+                A_SUB_P: if (q_reg == R_SHM && !shm_gnt) begin
+                    // shared RAM: hold until the Z80 has granted its bus
+                    // (no strobe yet; shm_req is up from this state on)
+                    ast <= A_SUB_P;
+                end else begin             // register the port outputs
                     o_addr  <= sub_a;
                     o_wbyte <= wr_byte;
                     o_wword <= wr_word;

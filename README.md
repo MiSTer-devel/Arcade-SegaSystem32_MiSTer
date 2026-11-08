@@ -329,9 +329,18 @@ Things you may notice, or may want to know:
   leaves those edges sharp rather than guess. The notes also say one
   mixer bit, which most games set, brightens the picture slightly. That
   is not applied either, because the amount is not known.
-- **Wait states.** The bus controller's wait-state settings are not
-  documented, and the Z80's wait line is not used. Like MAME, the core adds
-  no wait states on these paths.
+- **Wait states.** Games program the bus controller's wait-state table, one
+  setting per megabyte of the main CPU's address space, and the core applies
+  it as 3-, 4- or 5-clock bus cycles; MAME ignores the table. How many
+  clocks each setting really adds is not documented, so those lengths are
+  estimates checked against footage. The main CPU reaches the sound RAM by
+  taking the Z80's bus, as on the board: each access waits until the Z80
+  finishes its current machine cycle and stops (MAME skips this). The bus
+  controller's own delay in that handover is not documented, so the core
+  adds none. On the board the video chips can also stretch a main-CPU
+  cycle, and the bus controller drives the Z80's wait line; the core
+  models neither (nor does MAME), because when they act is not
+  documented.
 - **Sprite drawing speed.** The real sprite chip runs at 25 MHz, but its
   exact drawing rate is not documented. The core's sprite engine runs faster
   rather than risk dropping sprites, so a scene that would run out of time on

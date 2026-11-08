@@ -38,6 +38,9 @@ module s32_soundtop (
     output logic        rom_rd,
 
     // V60-side shared RAM port + command/interrupt handshake
+    // (shm_req/shm_gnt: Z80 bus takeover, see s32_sound "Bus takeover")
+    input  logic        shm_req,
+    output logic        shm_gnt,
     input  logic        shm_sel,
     input  logic        shm_we,
     input  logic [12:0] shm_addr,
@@ -74,6 +77,7 @@ module s32_soundtop (
         .ym1_cs(ym1_cs), .ym2_cs(ym2_cs), .ym_we(ym_we), .ym_a(ym_a),
         .ym_wdata(ym_wdata), .ym1_rdata(ym1_rdata),
         .ym2_rdata(ym2_rdata), .ym_irq(ym_irq),
+        .shm_req(shm_req), .shm_gnt(shm_gnt),
         .shm_sel(shm_sel), .shm_we(shm_we), .shm_addr(shm_addr),
         .shm_wdata(shm_wdata), .shm_rdata(shm_rdata),
         .nv_sel(nv_sel), .nv_we(nv_we), .nv_addr(nv_addr),
