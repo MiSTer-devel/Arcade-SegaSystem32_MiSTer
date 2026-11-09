@@ -93,6 +93,7 @@ localparam CONF_STR = {
 	"H1P1O[53:48],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
 	"O[10],Service,Off,On;",
+	"H2O[55:54],Stick aim,Absolute,Relative slow,Relative medium,Relative fast;",
 	"-;",
 	"T[0],Reset;",
 	"J1,Attack,Jump,Magic,Start,Coin,Service,Test,Button 4,Button 5,Button 6;",
@@ -106,6 +107,9 @@ wire forced_scandoubler;
 // offers an amount the stage is ignoring. The forced-scandoubler term is
 // upstream's integration rule: the stage fits a native 15 kHz raster.
 wire crt_enable;
+// The gun cabinets (Alien3, Jurassic Park; board descriptor, below): the
+// menu offers "Stick aim" only for them.
+wire gun_cab;
 wire   [1:0] buttons;
 wire [127:0] status;
 wire  [31:0] joystick_0, joystick_1, joystick_2, joystick_3;
@@ -134,7 +138,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({14'd0, ~crt_enable, 1'b0}),   // H1 = CRT Adjust amounts
+	.status_menumask({13'd0, ~gun_cab, ~crt_enable, 1'b0}), // H1 CRT Adjust amounts, H2 gun games' Stick aim
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -736,47 +740,48 @@ end
 //   - wheel: pad 1's left stick X, $80 + X, so full lock is $00 / $FF.
 //     Inside the stick's dead zone the d-pad steers instead: held, the wheel
 //     turns 3 counts per 2^18 clk_sys (~250 Hz, ~0.17 s to full lock);
-//     released, it returns to centre at the same rate.
-//   - accelerator: pad 1 button 1 (full), or the stick pushed up;
-//     brake: button 2 (full), or the stick pulled down. The stick is
-//     scaled x2, so half deflection is full travel.
+//     released, it returns to centre at the same rate (s32_dpad_axis).
+//   - accelerator: pad 1 button 1 (full), or the left stick pushed up;
+//     brake: button 2 (full), or the left stick pulled down, or the right
+//     stick pushed up, which is where MiSTer puts a wheel's brake pedal
+//     (s32_pedals). A stick's half axis is scaled x2 onto the pedal's
+//     full travel.
 // The rates and scales are usability settings, not hardware.
 reg [17:0] adc_tick_cnt = 0;
 always @(posedge clk_sys) adc_tick_cnt <= adc_tick_cnt + 1'd1;
 wire adc_tick = &adc_tick_cnt;
 wire [7:0] wheel_x = stick_dz(stick_0[7:0]);
-wire [7:0] pedal_y = stick_dz(stick_0[15:8]);
-reg  [7:0] wheel_dig = 8'h80;
-always @(posedge clk_sys) begin
-	if (rst_core)
-		wheel_dig <= 8'h80;
-	else if (adc_tick) begin
-		if (joystick_0[0] & ~joystick_0[1])             // right
-			wheel_dig <= (wheel_dig > 8'hFC) ? 8'hFF : wheel_dig + 8'd3;
-		else if (joystick_0[1] & ~joystick_0[0])        // left
-			wheel_dig <= (wheel_dig < 8'h03) ? 8'h00 : wheel_dig - 8'd3;
-		else if (wheel_dig > 8'h83)  wheel_dig <= wheel_dig - 8'd3;
-		else if (wheel_dig < 8'h7D)  wheel_dig <= wheel_dig + 8'd3;
-		else                         wheel_dig <= 8'h80;
-	end
-end
+wire [7:0] wheel_dig;
+s32_dpad_axis wheel_axis
+(
+	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.plus(joystick_0[0]), .minus(joystick_0[1]),   // right / left
+	.pos(wheel_dig)
+);
 wire [7:0] adc_wheel = (wheel_x != 8'd0) ? (wheel_x ^ 8'h80) : wheel_dig;
-// stick Y: negative = up (accelerator), positive = down (brake)
-wire [8:0] pedal_up = $signed(pedal_y) < 0 ? {-pedal_y, 1'b0} : 9'd0;
-wire [8:0] pedal_dn = $signed(pedal_y) > 0 ? {pedal_y, 1'b0} : 9'd0;
-wire [7:0] adc_accel = joystick_0[4] ? 8'hFF : pedal_up[8] ? 8'hFF : pedal_up[7:0];
-wire [7:0] adc_brake = joystick_0[5] ? 8'hFF : pedal_dn[8] ? 8'hFF : pedal_dn[7:0];
+wire [7:0] adc_accel, adc_brake;
+s32_pedals pedals
+(
+	.ly(stick_0[15:8]), .ry(rstick_0[15:8]),
+	.btn_accel(joystick_0[4]), .btn_brake(joystick_0[5]),
+	.accel(adc_accel), .brake(adc_brake)
+);
 
 // Gun aim (gun_harness, Alien3; jp_cab, Jurassic Park): the two positional
 // guns' X/Y on the four A/D channels. Each gun has one aim and the control that moved last sets
 // it: the player's left stick (or a lightgun reporting as one) points it
 // exactly; the d-pad, and for P1 the mouse, move it and it stays put
-// (s32_gun_aim.sv; docs/alien3-bringup.md §3).
+// (s32_gun_aim.sv; docs/alien3-bringup.md §3). The OSD "Stick aim" (O[55:54],
+// shown for these two cabinets only) makes the stick move the aim instead,
+// at one of three speeds, for thumbsticks; Absolute stays the default
+// because a lightgun needs it. A usability setting, not hardware.
 wire [31:0] gun_ain;
+assign gun_cab = gun_harness | jp_cab;
 s32_gun_aim gun_aim
 (
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
 	.y_lo(jp_cab ? 8'h00 : 8'h01),                // Jurassic Park: no MINMAX
+	.rel(status[55:54]),                          // OSD Stick aim
 	.dpad1(joystick_0[3:0]), .dpad2(joystick_1[3:0]),
 	.stick1(stick_0), .stick2(stick_1),
 	.mouse_ev(mouse_ev), .mouse_dx(mouse_dx), .mouse_dy(mouse_dy),
@@ -785,7 +790,12 @@ s32_gun_aim gun_aim
 // Air Rescue (ar_seat): ch0 the flight stick's X, reversed (MAME ANALOG1,
 // AD_STICK_X with PORT_REVERSE: full right reads $00), ch1 its Y (ANALOG2,
 // full down reads $FF), ch2 the collective (ANALOG3, AD_STICK_Z); all centre
-// $80, ch3 not connected. The stick is pad 1's left stick. The collective is
+// $80, ch3 not connected. The stick is pad 1's left stick, or the d-pad:
+// while the left stick rests in its dead zone and a direction is held, or
+// the d-pad's position has not yet sprung back to centre, that axis follows
+// the d-pad, 3 counts per 2^18 clk_sys towards the edge and back to centre
+// when released, as a sprung flight stick (s32_dpad_axis; MAME's arescue
+// PORT_KEYDELTA(10) and self-centring). The collective is
 // a lever that stays where it is put: pad 1's right stick Y sets it while
 // deflected (up = higher), and buttons 3 / 4 move it up / down 3 counts per
 // 2^18 clk_sys (~0.17 s end to end) otherwise. The rates and which way is
@@ -804,8 +814,27 @@ always @(posedge clk_sys) begin
 			ar_coll <= (ar_coll < 8'h03) ? 8'h00 : ar_coll - 8'd3;
 	end
 end
-wire [7:0] ar_x = ~(stick_0[7:0] ^ 8'h80);        // reversed
-wire [7:0] ar_y = stick_0[15:8] ^ 8'h80;
+wire [7:0] ar_dig_x, ar_dig_y;
+s32_dpad_axis ar_axis_x
+(
+	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.plus(joystick_0[0]), .minus(joystick_0[1]),   // right / left
+	.pos(ar_dig_x)
+);
+s32_dpad_axis ar_axis_y
+(
+	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.plus(joystick_0[2]), .minus(joystick_0[3]),   // down / up
+	.pos(ar_dig_y)
+);
+// an axis follows the d-pad only while its stick axis rests, so the stick
+// stays exact (no dead zone) whenever the d-pad is not in use
+wire ar_use_dx = (stick_dz(stick_0[7:0]) == 8'd0)
+               & (joystick_0[0] | joystick_0[1] | (ar_dig_x != 8'h80));
+wire ar_use_dy = (stick_dz(stick_0[15:8]) == 8'd0)
+               & (joystick_0[2] | joystick_0[3] | (ar_dig_y != 8'h80));
+wire [7:0] ar_x = ~(ar_use_dx ? ar_dig_x : stick_0[7:0] ^ 8'h80);   // reversed
+wire [7:0] ar_y =   ar_use_dy ? ar_dig_y : stick_0[15:8] ^ 8'h80;
 wire [31:0] adc_ain = (gun_harness | jp_cab) ? gun_ain
                    : stick_harness ? 32'hFFFFFFFF       // nothing connected
                    : ar_seat ? {8'hFF, ar_coll, ar_y, ar_x}

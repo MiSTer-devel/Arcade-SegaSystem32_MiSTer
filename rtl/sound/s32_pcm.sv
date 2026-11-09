@@ -80,14 +80,54 @@ module s32_pcm (
     // 8 channels at ~4 clk each.
     localparam int WAVE_RDW_OLD_P = 0;
     wire [7:0] wave_q_cpu_s, wave_q_ch_s;
-    wire [7:0] wave_din = wdata;
     assign wave_q_cpu = wave_q_cpu_s;
     assign wave_q_ch  = wave_q_ch_s;
+
+    // Power-on wave-RAM fill (2026-11-09). MAME fills the System 32 sound
+    // RAM with FF once at start-up, "otherwise f1en has bad sound (MT04531)"
+    // (segas32_v.cpp:275-277, latest master). F1 Exhaust Note's sound
+    // program loads each engine sample into the first 4 KB of an 8 KB slot
+    // (C000-CFFF, E000-EFFF) and writes the FF loop marker only into the
+    // slot's top 256 bytes (DF00-DFFF, FF00-FFFF); the 3.75 KB between is
+    // never written. From FF, a channel reaching D000/F000 loops back at
+    // once; from the M10K's power-up zeros it plays ~3.75 KB of silence
+    // first, cutting the engine out for about half of every loop
+    // (docs/OPEN-QUESTIONS.md Q67). The board's SRAM powers up in an
+    // undefined state, so FF is MAME's choice, not a measurement.
+    //
+    // Once per FPGA configuration (= power-on: MiSTer loads the RBF with each
+    // MRA), starting with the first reset; a later reset keeps the RAM, as
+    // the board's SRAM and MAME's soft reset do. 65536 clk, one byte a
+    // clock on port A. S32.sv holds rst_core at least 65535 clk past every
+    // reset cause, so the fill always ends before the Z80 runs; benches
+    // release reset sooner, so it may finish after reset, and a CPU wave
+    // write landing before it ends (one the fill could then overwrite) is
+    // flagged below.
+    logic        fill_busy = 1'b0;
+    logic        fill_done = 1'b0;     // power-up 0: set after the one fill
+    logic [15:0] fill_addr = 16'd0;
+    always_ff @(posedge clk) begin
+        if (rst && !fill_busy && !fill_done) begin
+            fill_busy <= 1'b1;
+            fill_addr <= 16'd0;
+        end else if (fill_busy && !sel) begin
+            fill_addr <= fill_addr + 16'd1;
+            if (fill_addr == 16'hFFFF) begin
+                fill_busy <= 1'b0;
+                fill_done <= 1'b1;
+            end
+        end
+    end
+    wire        wave_fill_we = fill_busy && !sel;   // CPU accesses go first
+    wire [15:0] wave_addr_a  = wave_fill_we ? fill_addr
+                                            : (wbank | {4'd0, addr[11:0]});
+    wire [7:0]  wave_din     = wave_fill_we ? 8'hFF : wdata;
+
     s32_tdp #(.AW(16), .DW(8), .OREGB(1), .RDW_FWD(1),
               .RDW_OLD(WAVE_RDW_OLD_P)) u_wave (
         .clk(clk),
-        .we_a(sel && we && addr[12]),
-        .addr_a(wbank | {4'd0, addr[11:0]}),
+        .we_a((sel && we && addr[12]) || wave_fill_we),
+        .addr_a(wave_addr_a),
         .d_a(wave_din), .q_a(wave_q_cpu_s),
         .we_b(1'b0), .addr_b(wave_raddr_ch),
         .d_b(8'd0), .q_b(wave_q_ch_s)

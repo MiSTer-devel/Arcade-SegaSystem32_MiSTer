@@ -81,7 +81,8 @@ module v60 (
         // bit fields (extbf*/insbf*) and the upward bit search (sch*bsu)
         S_BF_LEN, S_BF_RD, S_BF_CAP, S_BF_WR, S_SB_RD, S_SB_CAP, S_SB_BIT,
         // ldtask / sttask TCB walk, and chlvl's fourth (parameter) push
-        S_TK_RD, S_TK_CONSUME, S_TK_WR, S_XCP_P4
+        S_TK_RD, S_TK_CONSUME, S_TK_WR, S_XCP_P4,
+        S_HALT                        // halt: wait for an accepted interrupt
     } state_e;
     state_e state;
 
@@ -257,8 +258,9 @@ module v60 (
                          : (state == S_TK_WR) ? tk_psel(tk_idx)  // sttask
                          : (state == S_XCP_SBR) ? 4'd5   // irq: SBR
                          : (exec_q == 8'd30) ? op1_val[3:0]
-                         : (exec_q == 8'd53 || exec_q == 8'd77)
-                                               ? 4'd5    // trap/chlvl: SBR
+                         : (exec_q == 8'd53 || exec_q == 8'd77 ||
+                            exec_q == 8'd83)
+                                               ? 4'd5    // trap/chlvl/brk: SBR
                          : (exec_q == 8'd79) ? 4'd6      // sttask: TR
                          : op2_val[3:0];
     logic [3:0]  preg_sel;
@@ -523,6 +525,8 @@ module v60 (
         (exec_q == 8'd63) ||                     // call: target address (op2,
                                                  // the arg list, is address-
                                                  // only via !op2_need_val)
+        (exec_q == 8'd82) ||                     // getpsw: write-only dest
+                                                 // (MAME WriteAM, no read)
         bit_op1;                                 // movbs/extbf/sch: bit base
 
     // op2 old value needed from MEMORY (RMW, bit ops, xch, updpsw, test1);
@@ -1448,6 +1452,15 @@ module v60 (
                                 tk_idx <= 6'd0; tk_ptr <= preg_rdata;
                                 state <= S_TK_WR;
                             end
+                            8'd82: begin                // getpsw
+                                // dest.w <- PSW (NEC V60 manual p.7-46;
+                                // MAME opGETPSW / v60ReadPSW). psw[3:0]
+                                // already holds Z/S/OV/CY in MAME's bit
+                                // order, so the register is the value.
+                                // Flags unchanged. Spider-Man 072AFE.
+                                wb_res_q <= psw;
+                                state <= S_WB;
+                            end
                             8'd46: begin                // retis
                                 nmi_busy <= 1'b0;       // NMI window
                                 state <= S_RETIS1;      // reopens
@@ -1481,8 +1494,62 @@ module v60 (
                                 state <= S_BF_LEN;
                             end
                             8'd44: begin                // halt
-                                trap <= 1'b1; trap_op <= exec_q;
-                                state <= S_TRAP;
+                                // NEC manual p.7-46: "The processor halts
+                                // and waits for an interrupt. Following the
+                                // execution of the interrupt handler,
+                                // program execution will continue with the
+                                // instruction following the HALT." So PC
+                                // moves past the halt now and S_HALT waits;
+                                // S_FETCH then takes the interrupt with that
+                                // PC as the return address. HALT is
+                                // privileged: at EL != 0 it raises the
+                                // Privileged Instruction exception, which
+                                // the core does not model, so it still
+                                // parks there (S_TRAP, op 44). MAME skips
+                                // halt ("It should wait for an interrupt").
+                                // Reached on these boards through the
+                                // games' exception vectors, which point at
+                                // runs of halt bytes (ga2 SBR 100000 ->
+                                // 1007B8, spidman 9F000 -> 9F6BC):
+                                // docs/spidman-bringup.md section 4.5.
+                                if (psw[25:24] != 2'd0) begin
+                                    trap <= 1'b1; trap_op <= exec_q;
+                                    state <= S_TRAP;
+                                end else begin
+                                    pc <= next_seq_pc;
+                                    state <= S_HALT;
+                                end
+                            end
+                            8'd83: begin                // brk
+                                // Breakpoint trap, exception #13 (NEC manual
+                                // p.7-12; Fig. 8-2 slot 13 = SBR+52; code
+                                // 0D00h, Table 8-1; frame p.8-16 "Exception
+                                // Code|4, PSW, PC"). Entry as TRAP (p.8-3):
+                                // EL=0, EM/TP/AE/TE cleared, ASA set, IE and
+                                // IS unchanged. Which PC: NextPC, the
+                                // address after the 1-byte BRK (len_q is
+                                // kept, so S_XCP_P3 writes pc + 1). The
+                                // instruction page (p.7-12) says NextPC;
+                                // the exception chapter (p.8-10, p.8-16
+                                // "PC (Current PC)") says the BRK's own
+                                // address. HP's 70632 emulator guide
+                                // 64758-97004 p.2-23, describing the real
+                                // V70 in its probe executing BRK: "push the
+                                // next PC, PSW and a word of exception code
+                                // to stack" (p.4-15: "as the same as the
+                                // 70632 microprocessor does"). Two sources,
+                                // one from the silicon, so NextPC.
+                                // docs/OPEN-QUESTIONS.md Q66. MAME skips brk
+                                // (its commented-out code pushes PC+1 too).
+                                xcp_oldpsw <= psw;
+                                psw_wen <= 1'b1;
+                                psw_wdata <= (psw & ~32'h2B03_0000)
+                                           | 32'h8000_0000;   // PSW.ASA
+                                xcp_vecaddr <= (preg_rdata & ~32'hFFF)
+                                             + 32'd52;
+                                xcp_code <= {16'h0D00, 16'd4};
+                                xcp_irq <= 1'b0;
+                                state <= S_XCP_VEC;
                             end
                             default: begin          // datapath + mov family
                                 if (exec_setflags) begin
@@ -2020,6 +2087,15 @@ module v60 (
                 end
 
                 S_TRAP: ;                           // unimplemented: stop
+
+                // halt: PC already points past the halt. Leave only for an
+                // interrupt S_FETCH will ACCEPT (an NMI not in service, or
+                // IRQ with PSW.IE), so it is taken at once with that PC as
+                // the return address. A maskable request with IE clear does
+                // not wake the CPU here (the manual does not say it does).
+                S_HALT:
+                    if ((nmi_pend && !nmi_busy) || (irq && psw[18]))
+                        state <= S_FETCH;
 
                 default: state <= S_FETCH;
             endcase

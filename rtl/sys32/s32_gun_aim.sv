@@ -26,14 +26,25 @@
 //   - the stick takes the aim back once it moves more than STICK_GRAB counts
 //     on either axis from where it stood when it lost it, so a thumbstick
 //     resting slightly off centre does not drag a d-pad aim back.
+// That is the default, `rel` = 0. With `rel` = 1, 2 or 3 (S32.sv's OSD
+// "Stick aim", Relative slow / medium / fast) the stick instead MOVES the
+// aim, as the d-pad does, and the aim stays where it is left: every `tick`
+// each axis adds its deflection x 1, 2 or 4 / 128 counts (|deflection| < 8
+// is a dead zone; the fraction carries over, starting from one half so the
+// two directions round alike), so full deflection crosses
+// the range in ~1.0 / 0.5 / 0.26 s at ~250 Hz. The stick then never owns
+// the aim, which suits a thumbstick but not a lightgun, which needs 0. The
+// d-pad and the mouse work as before in every mode. Changing the mode keeps
+// the aim where it stands.
 // Reset centres the aim and gives it to the stick. The game maps the range
 // to the screen with its own GUN ADJUSTMENT (service mode; the factory
 // EEPROM carries a calibration), which also calibrates a lightgun. The rates,
 // the grab threshold and the mouse scale are usability settings, not
 // hardware.
 //
-// Cost: per gun an 8-bit X/Y aim, the stick's reference X/Y and an owner
-// bit; their step/clamp adders and compares.
+// Cost: per gun an 8-bit X/Y aim, the stick's reference X/Y, an owner bit
+// and two 7-bit relative-mode fractions; their step/clamp adders and
+// compares.
 
 module s32_gun_aim #(
     parameter logic [7:0] STICK_GRAB = 8'd4
@@ -42,6 +53,7 @@ module s32_gun_aim #(
     input  logic        rst,
     input  logic        tick,          // d-pad step strobe
     input  logic [7:0]  y_lo,          // Y's lowest value (Alien3 $01)
+    input  logic [1:0]  rel,           // 0 stick points; 1-3 stick moves
     input  logic [3:0]  dpad1,         // MiSTer order: [0]R [1]L [2]D [3]U
     input  logic [3:0]  dpad2,
     input  logic [15:0] stick1,        // left stick: [7:0] X, [15:8] Y,
@@ -75,11 +87,21 @@ module s32_gun_aim #(
         far = ((a > b) ? a - b : b - a) > STICK_GRAB;
     endfunction
 
+    // relative mode: a stick axis' deflection, dead-zoned, times the rate
+    function automatic signed [10:0] rel_in (input [7:0] v, input [1:0] r);
+        logic signed [10:0] d;
+        d = ($signed(v) > 8'sd7 || $signed(v) < -8'sd7)
+          ? $signed({{3{v[7]}}, v}) : 11'sd0;
+        rel_in = (r == 2'd3) ? d <<< 2 : (r == 2'd2) ? d <<< 1 : d;
+    endfunction
+
     logic [15:0] aim [0:1];                  // {Y, X}
+    logic  [6:0] frac [0:1][0:1];            // [gun][X,Y] 1/128 counts
     logic [15:0] ref_q [0:1];                // the stick when it lost the aim
     logic        own [0:1];                  // 1 = the stick has the aim
     initial for (int n = 0; n < 2; n++) begin
         aim[n] = 16'h8080; ref_q[n] = 16'h8080; own[n] = 1'b1;
+        frac[n][0] = 7'h40; frac[n][1] = 7'h40;
     end
 
     always_ff @(posedge clk) begin
@@ -87,13 +109,26 @@ module s32_gun_aim #(
             logic [15:0] p, a;
             logic [3:0]  dp;
             logic        dmove, mmove;
+            logic signed [10:0] sx, sy;      // relative mode: frac + step
             p  = point(n == 0 ? stick1 : stick2, y_lo);
             dp = (n == 0) ? dpad1 : dpad2;
             dmove = tick & |dp;
             mmove = (n == 0) & mouse_ev & (|mouse_dx | |mouse_dy);
             a = aim[n];
-            if (dmove | mmove) begin
+            // relative mode, a d-pad step or a mouse packet: the aim moves
+            // from where it stands and stays there
+            if (rel != 2'd0 || dmove || mmove) begin
                 if (own[n]) a = p;           // carry on from the stick's aim
+                if (rel != 2'd0 && tick) begin   // the stick moves it
+                    sx = $signed({4'd0, frac[n][0]})
+                       + rel_in(n == 0 ? stick1[7:0]  : stick2[7:0],  rel);
+                    sy = $signed({4'd0, frac[n][1]})
+                       + rel_in(n == 0 ? stick1[15:8] : stick2[15:8], rel);
+                    frac[n][0] <= sx[6:0];
+                    frac[n][1] <= sy[6:0];
+                    a[7:0]  = aim_add(a[7:0],  {{6{sx[10]}}, sx[10:7]}, 8'h00);
+                    a[15:8] = aim_add(a[15:8], {{6{sy[10]}}, sy[10:7]}, y_lo);
+                end
                 if (dmove) begin
                     a[7:0]  = aim_step(a[7:0],  dp[0], dp[1], 8'h00);  // R / L
                     a[15:8] = aim_step(a[15:8], dp[2], dp[3], y_lo);  // D / U
@@ -115,6 +150,11 @@ module s32_gun_aim #(
         if (rst) for (int n = 0; n < 2; n++) begin
             aim[n] <= 16'h8080; ref_q[n] <= 16'h8080; own[n] <= 1'b1;
         end
+        // the fractions only carry while relative; reset re-halves them too
+        if (rst || rel == 2'd0)
+            for (int n = 0; n < 2; n++) begin
+                frac[n][0] <= 7'h40; frac[n][1] <= 7'h40;
+            end
     end
 
     // the stick's aim shows the clock it moves; a held aim from its register
