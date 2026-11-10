@@ -318,10 +318,14 @@ Things you may notice, or may want to know:
   circle that grows, shrinks and flickers. MAME 0.288 does not draw this
   effect. The core uses the model that MAME added after 0.288
   (mamedev/mame#16038), so current MAME and the core agree.
-- **CPU timing.** No NEC document gives per-instruction cycle counts, so the
-  V60's timing comes from its bus and prefetch logic rather than a cycle
-  table. MAME charges a flat 8 clocks per instruction, so instruction timing
-  can differ slightly from MAME.
+- **CPU timing.** NEC never published a full cycle table for the V60, so
+  its timing comes mostly from its bus and prefetch logic: every taken
+  branch empties the prefetch queue and fetches its target again, as the
+  data sheet describes. NEC did publish clock counts for a few
+  instructions, and the core uses them: 23 clocks for a multiply, 43 for a
+  divide, 17 for an arithmetic shift, and the delay from an interrupt to
+  its handler. MAME charges a flat 8 clocks per instruction, so instruction
+  timing can differ slightly from MAME.
 - **CPU edge cases follow NEC's manual, not MAME.** A divide by zero takes
   the V60's Zero Divide exception, an overflowing extended divide (DIVX,
   DIVUX) sets the overflow flag and keeps its destination, and a software

@@ -69,6 +69,7 @@ module v60_ea (
     logic [4:0]  sub;
     logic [31:0] d8, d16, d32;      // sign-extended displacement candidates
     logic [31:0] size;
+    logic [31:0] idx_sc;            // index register scaled by the operand size
 
     always_comb begin
         mod = am_bytes[79:72];
@@ -85,6 +86,15 @@ module v60_ea (
 
         size = (bitmode || opsize == 2'd0) ? 32'd1
              : (opsize == 2'd1) ? 32'd2 : 32'd4;
+        // Rx * size, size being 1, 2 or 4: a shift by 0, 1 or 2. Written as
+        // the shift because `idx_val * size` synthesized as a 32x32 multiplier
+        // (two DSP blocks, 6.5 ns of cell delay) in the middle of the core's
+        // longest path, register select -> index register -> ea -> the bus
+        // unit's queued address (docs/board-design.md 9.3 item 9). The same
+        // 32-bit value: a product modulo 2^32 by 2^k drops the top k bits.
+        idx_sc = (bitmode || opsize == 2'd0) ? idx_val
+               : (opsize == 2'd1) ? {idx_val[30:0], 1'b0}
+               :                    {idx_val[29:0], 2'b00};
 
         ea       = 32'd0;
         ea_kind  = K_BAD;
@@ -149,24 +159,24 @@ module v60_ea (
                     idx_sel = mod[4:0];
                     unique case (nxt[7:5])
                         3'd0: begin                        // disp8[Rn](Rx)
-                            ea = reg_val + idx_val * size
+                            ea = reg_val + idx_sc
                                + {{24{am_bytes[63]}}, am_bytes[63:56]};
                             ea_kind = K_MEM;
                         end
                         3'd1: begin                        // disp16[Rn](Rx)
-                            ea = reg_val + idx_val * size
+                            ea = reg_val + idx_sc
                                + {{16{am_bytes[55]}}, am_bytes[55:48],
                                   am_bytes[63:56]};
                             ea_kind = K_MEM;
                         end
                         3'd2: begin                        // disp32[Rn](Rx)
-                            ea = reg_val + idx_val * size
+                            ea = reg_val + idx_sc
                                + {am_bytes[39:32], am_bytes[47:40],
                                   am_bytes[55:48], am_bytes[63:56]};
                             ea_kind = K_MEM;
                         end
                         3'd3: begin                        // [Rn](Rx)
-                            ea = reg_val + idx_val * size;
+                            ea = reg_val + idx_sc;
                             ea_kind = K_MEM;
                         end
                         // deferred indexed: stage-1 pointer = Rn + disp,
@@ -175,44 +185,44 @@ module v60_ea (
                             ea = reg_val
                                + {{24{am_bytes[63]}}, am_bytes[63:56]};
                             ea_kind = K_DEF;
-                            def_idxoff = idx_val * size;
+                            def_idxoff = idx_sc;
                         end
                         3'd5: begin                        // [disp16[Rn]](Rx)
                             ea = reg_val
                                + {{16{am_bytes[55]}}, am_bytes[55:48],
                                   am_bytes[63:56]};
                             ea_kind = K_DEF;
-                            def_idxoff = idx_val * size;
+                            def_idxoff = idx_sc;
                         end
                         3'd6: begin                        // [disp32[Rn]](Rx)
                             ea = reg_val
                                + {am_bytes[39:32], am_bytes[47:40],
                                   am_bytes[55:48], am_bytes[63:56]};
                             ea_kind = K_DEF;
-                            def_idxoff = idx_val * size;
+                            def_idxoff = idx_sc;
                         end
                         3'd7: begin
                             // PC-relative / direct-address indexed forms
                             unique case (nxt[4:0])
                                 5'd16: begin       // disp8[PC](Rx)
-                                    ea = pc + idx_val * size
+                                    ea = pc + idx_sc
                                        + {{24{am_bytes[63]}}, am_bytes[63:56]};
                                     ea_kind = K_MEM;
                                 end
                                 5'd17: begin       // disp16[PC](Rx)
-                                    ea = pc + idx_val * size
+                                    ea = pc + idx_sc
                                        + {{16{am_bytes[55]}}, am_bytes[55:48],
                                           am_bytes[63:56]};
                                     ea_kind = K_MEM;
                                 end
                                 5'd18: begin       // disp32[PC](Rx)
-                                    ea = pc + idx_val * size
+                                    ea = pc + idx_sc
                                        + {am_bytes[39:32], am_bytes[47:40],
                                           am_bytes[55:48], am_bytes[63:56]};
                                     ea_kind = K_MEM;
                                 end
                                 5'd19: begin       // /addr(Rx)
-                                    ea = idx_val * size
+                                    ea = idx_sc
                                        + {am_bytes[39:32], am_bytes[47:40],
                                           am_bytes[55:48], am_bytes[63:56]};
                                     ea_kind = K_MEM;
@@ -222,27 +232,27 @@ module v60_ea (
                                     ea = pc
                                        + {{24{am_bytes[63]}}, am_bytes[63:56]};
                                     ea_kind = K_DEF;
-                                    def_idxoff = idx_val * size;
+                                    def_idxoff = idx_sc;
                                 end
                                 5'd25: begin       // [disp16[PC]](Rx)
                                     ea = pc
                                        + {{16{am_bytes[55]}}, am_bytes[55:48],
                                           am_bytes[63:56]};
                                     ea_kind = K_DEF;
-                                    def_idxoff = idx_val * size;
+                                    def_idxoff = idx_sc;
                                 end
                                 5'd26: begin       // [disp32[PC]](Rx)
                                     ea = pc
                                        + {am_bytes[39:32], am_bytes[47:40],
                                           am_bytes[55:48], am_bytes[63:56]};
                                     ea_kind = K_DEF;
-                                    def_idxoff = idx_val * size;
+                                    def_idxoff = idx_sc;
                                 end
                                 5'd27: begin       // [/addr](Rx)
                                     ea = {am_bytes[39:32], am_bytes[47:40],
                                           am_bytes[55:48], am_bytes[63:56]};
                                     ea_kind = K_DEF;
-                                    def_idxoff = idx_val * size;
+                                    def_idxoff = idx_sc;
                                 end
                                 default: ea_kind = K_BAD;
                             endcase

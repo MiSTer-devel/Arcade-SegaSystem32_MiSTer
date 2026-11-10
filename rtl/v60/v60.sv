@@ -22,6 +22,15 @@ module v60 (
     input  logic [175:0] fetch_bytes,
     output logic [5:0]   fetch_len,    // decoded length of the instruction
                                        // at fetch_bytes (s32_sys fetch_hold)
+    // Control transfer: high for the one clock in which fetch_pc first
+    // shows the target of a taken branch, jump, call, return, interrupt or
+    // exception. The prefetch unit flushes its queue on it whatever the
+    // target, as the real part does (uPD70616 data sheet p.18: "In the
+    // event of a control transfer, interrupt or exception, the instruction
+    // queue contents are flushed and a demand mode instruction fetch is
+    // made"; v60_pfu.sv header for the analyzer capture that shows it).
+    // A branch that is not taken is not a transfer.
+    output logic         pc_jump,
 
     output logic         mem_re,
     output logic         mem_we,
@@ -82,9 +91,55 @@ module v60 (
         S_BF_LEN, S_BF_RD, S_BF_CAP, S_BF_WR, S_SB_RD, S_SB_CAP, S_SB_BIT,
         // ldtask / sttask TCB walk, and chlvl's fourth (parameter) push
         S_TK_RD, S_TK_CONSUME, S_TK_WR, S_XCP_P4,
-        S_HALT                        // halt: wait for an accepted interrupt
+        S_HALT,                       // halt: wait for an accepted interrupt
+        S_DWELL                       // execution clocks with no bus work
     } state_e;
     state_e state;
+
+    // ------------------------------------------------- execution dwell
+    // Clocks the real execution unit spends that this sequencer has no
+    // steps for. The only per-instruction clock counts NEC published are
+    // the V70 column of Komoto, Saito and Mine, "Overview of 32-bit
+    // V-Series Microprocessor", J. Information Processing 13(2) 1990,
+    // Table 4 p.116 and Table 5 p.117 (docs_ref/IPSJ-JIP1302002...; the
+    // V60 and V70 share the microprogrammed execution unit, the V70 has a
+    // 32-bit, two-clock bus). The rows the execution unit bounds are used
+    // here; rows that are bus traffic are left to the bus unit. All
+    // counts are V60 clocks from one instruction start to the next, with
+    // the prefetch queue full (tools/pcbtests/pt_cpi.py measures them):
+    //   MUL.W 23, DIV.W 43   S_MD_WAIT lasts at least md_steps() steps;
+    //                        the unit itself needs 9 at 16 MHz. Byte
+    //                        and halfword forms scale with the operand
+    //                        (two multiplier bits or one quotient bit a
+    //                        clock, on NEC's word figures): an
+    //                        extrapolation, Q39.
+    //   SHA.W 17             DW_SHA steps before the write-back step.
+    //                        SHL/ROT/ROTC have no row and keep the
+    //                        single-pass cost.
+    //   INT response 165     "until handler exec", with five two-clock
+    //                        cycles on the V70's bus (acknowledge, vector,
+    //                        two pushes, target fetch): 155 clocks that
+    //                        are not bus cycles. Here the same accesses
+    //                        are an acknowledge cycle this model does not
+    //                        run (4), the vector read (two ROM cycles, 8),
+    //                        the pushes (four work-RAM cycles, 20) and the
+    //                        target fetch (4): 155 + 36 = 191 from the
+    //                        accepting S_FETCH to the handler's first
+    //                        instruction, when that is one bus word. The
+    //                        sequencer and its bus cycles take 38 of them
+    //                        (pt_cpi); DW_INT is the rest. The bus unit
+    //                        still times the cycles, so a slower stack or
+    //                        a longer first instruction adds on top.
+    localparam logic [7:0] DW_SHA = 8'd11;
+    localparam logic [7:0] DW_INT = 8'd156;
+    logic [7:0] dw_cnt;               // steps still to wait
+    logic       dw_xcp;               // S_DWELL leads to S_XCP_SBR, not S_WB
+    function automatic logic [7:0] md_steps (input logic mul, input logic [1:0] w);
+        // S_MD_WAIT steps; the instruction's other six steps make NEC's
+        // 23 (multiply) and 43 (divide) for a word
+        if (mul) md_steps = (w == 2'd0) ? 8'd5  : (w == 2'd1) ? 8'd9  : 8'd17;
+        else     md_steps = (w == 2'd0) ? 8'd13 : (w == 2'd1) ? 8'd21 : 8'd37;
+    endfunction
 
     logic [31:0] pc;
     logic [175:0] iw;
@@ -1026,12 +1081,16 @@ module v60 (
     always_ff @(posedge clk) begin
         wen <= 1'b0; psw_wen <= 1'b0; flags_wen <= 1'b0;
         preg_wen <= 1'b0; md_start <= 1'b0; pw_ovr_q <= 1'b0;
+        pc_jump <= 1'b0;
 
         nmi_q <= nmi;
         if (nmi && !nmi_q) nmi_pend <= 1'b1;      // edge latch (any state)
 
         if (rst) begin
             pc <= 32'h00FF_FFF0;                  // reset vector 0xFFFFF0
+            pc_jump <= 1'b0;
+            dw_cnt <= 8'd0;
+            dw_xcp <= 1'b0;
             state <= S_FETCH;
             trap <= 1'b0;
             nmi_q <= 1'b0;
@@ -1059,7 +1118,8 @@ module v60 (
                         psw_wen <= 1'b1;
                         psw_wdata <= (psw & ~32'h2B07_0000)
                                    | 32'h8000_0000 | 32'h1000_0000;
-                        state <= S_XCP_SBR;
+                        dw_cnt <= DW_INT - 8'd1; dw_xcp <= 1'b1;
+                        state <= S_DWELL;
                     end else if (irq && psw[18]) begin
                         // external interrupt: dispatch instead of executing;
                         // return PC is the interrupted instruction
@@ -1071,7 +1131,9 @@ module v60 (
                         psw_wen <= 1'b1;
                         psw_wdata <= (psw & ~32'h2B07_0000)
                                    | 32'h8000_0000 | 32'h1000_0000;
-                        state <= S_XCP_SBR;
+                        // interrupt response time (dwell table above)
+                        dw_cnt <= DW_INT - 8'd1; dw_xcp <= 1'b1;
+                        state <= S_DWELL;
                     end else begin
                         iw <= fetch_bytes;
                         ilen <= f_ilen;   ftype <= f_ftype;
@@ -1236,6 +1298,7 @@ module v60 (
                     if (is_bcc) begin
                         pc <= cond(b0[3:0], psw[3:0])
                             ? pc + disp_f4 : next_seq_pc;
+                        pc_jump <= cond(b0[3:0], psw[3:0]);
                         state <= S_FETCH;
                     end else if (is_dbcc) begin
                         wen <= 1'b1; waddr <= b1[4:0];
@@ -1243,18 +1306,25 @@ module v60 (
                         pc <= ((rd_a - 32'd1 != 32'd0) &&
                                cond(exec_q[3:0], psw[3:0]))
                             ? pc + disp_f6 : next_seq_pc;
+                        pc_jump <= (rd_a - 32'd1 != 32'd0) &&
+                                   cond(exec_q[3:0], psw[3:0]);
                         state <= S_FETCH;
                     end else if (exec_q == 8'h31) begin   // tb
                         pc <= (rd_a == 32'd0) ? pc + disp_f6 : next_seq_pc;
+                        pc_jump <= (rd_a == 32'd0);
                         state <= S_FETCH;
                     end else begin
                         unique case (exec_q)
                             8'd14, 8'd15, 8'd16, 8'd17,
                             8'd56, 8'd57: begin     // mul/div + rem/remu
                                 md_start <= 1'b1; state <= S_MD_WAIT;
+                                dw_cnt <= md_steps(md_op[4:1] == 4'd7,
+                                                   exec_width) - 8'd1;
                             end
                             8'd54, 8'd60, 8'd80, 8'd81: begin
-                                // divux / divx / mulx / mulux
+                                // divux / divx / mulx / mulux: a word
+                                // multiplier or divisor, timed as one
+                                dw_cnt <= md_steps(is_mlx_op, 2'd2) - 8'd1;
                                 if (!op2_isreg)     // memory form: pair in
                                     state <= S_DVX_RD;  // memory (low read
                                                         // issued comb)
@@ -1265,16 +1335,18 @@ module v60 (
                             8'd24: begin            // bsr (disp16)
                                 wen <= 1'b1; waddr <= 5'd31;
                                 wdata <= rd_a - 32'd4;
-                                pc <= pc + disp_f4;
+                                pc <= pc + disp_f4; pc_jump <= 1'b1;
                                 state <= S_FETCH;
                             end
                             8'd25: begin            // jmp
-                                pc <= op1_ea_q; state <= S_FETCH;
+                                pc <= op1_ea_q; pc_jump <= 1'b1;
+                                state <= S_FETCH;
                             end
                             8'd26: begin            // jsr
                                 wen <= 1'b1; waddr <= 5'd31;
                                 wdata <= rd_a - 32'd4;
-                                pc <= op1_ea_q; state <= S_FETCH;
+                                pc <= op1_ea_q; pc_jump <= 1'b1;
+                                state <= S_FETCH;
                             end
                             8'd27: begin            // rsr
                                 wen <= 1'b1; waddr <= 5'd31;
@@ -1559,6 +1631,11 @@ module v60 (
                                 if (exec_wb) begin
                                     wb_res_q <= exec_res;
                                     state <= S_WB;
+                                    if (exec_q == 8'd11) begin  // sha
+                                        dw_cnt <= DW_SHA - 8'd1;
+                                        dw_xcp <= 1'b0;
+                                        state <= S_DWELL;
+                                    end
                                 end else begin
                                     pc <= next_seq_pc; state <= S_FETCH;
                                 end
@@ -1579,7 +1656,11 @@ module v60 (
                     // held cycle and be missed, leaving the core stuck here.
                     // !md_start covers the one cycle before busy rises; the
                     // result and flags stay registered in u_md until the
-                    // next start.
+                    // next start. The state lasts at least md_steps (dw_cnt,
+                    // loaded in S_EXEC): the unit is done long before the
+                    // real execution unit would be. A zero divisor leaves at
+                    // once (its clocks are unknown, Q3).
+                    if (dw_cnt != 8'd0) dw_cnt <= dw_cnt - 8'd1;
                     if (!md_busy && !md_start && md_zdiv) begin
                         // Integer Zero Divide, exception #21 (NEC manual
                         // p.8-8, frame p.8-17, code 1500h Table 8-1). The
@@ -1607,7 +1688,7 @@ module v60 (
                         $display("V60 ZERO DIVIDE pc=%06x op=%0d t=%0t",
                                  pc[23:0], exec_q, $time);
 `endif
-                    end else if (!md_busy && !md_start) begin
+                    end else if (!md_busy && !md_start && dw_cnt == 8'd0) begin
                         flags_wen <= 1'b1; flags_wdata <= md_fo;
                         if (is_pair_op) begin
                             if (op2_isreg) begin
@@ -1636,7 +1717,7 @@ module v60 (
                 end
 
                 S_RETIS1: begin                     // consume popped PC
-                    pc <= mem_rdata;
+                    pc <= mem_rdata; pc_jump <= 1'b1;
                     state <= S_RETIS2;
                 end
                 S_RETIS2: begin                     // consume popped PSW
@@ -1662,13 +1743,13 @@ module v60 (
                 S_CALL2: begin                      // call: next PC pushed
                     wen <= 1'b1; waddr <= 5'd31;    // comb; SP -= 8, jump
                     wdata <= rd_a - 32'd8;
-                    pc <= op1_ea_q;
+                    pc <= op1_ea_q; pc_jump <= 1'b1;
                     state <= S_FETCH;
                 end
 
                 S_POP_RD: begin                     // rsr / pop consume
                     if (exec_q == 8'd27) begin
-                        pc <= mem_rdata; state <= S_FETCH;
+                        pc <= mem_rdata; pc_jump <= 1'b1; state <= S_FETCH;
                     end else begin
                         wb_res_q <= mem_rdata; state <= S_WB;
                     end
@@ -1704,7 +1785,7 @@ module v60 (
                     if (xcp_irq) begin
                         wen <= 1'b1; waddr <= 5'd31;   // SP -= 8
                         wdata <= rd_a - 32'd8;
-                        pc <= xcp_tgt;
+                        pc <= xcp_tgt; pc_jump <= 1'b1;
                         state <= S_FETCH;
                     end else
                         state <= S_XCP_P3;
@@ -1715,7 +1796,7 @@ module v60 (
                     else begin
                         wen <= 1'b1; waddr <= 5'd31;    // SP -= 12
                         wdata <= rd_a - 32'd12;
-                        pc <= xcp_tgt;
+                        pc <= xcp_tgt; pc_jump <= 1'b1;
                         state <= S_FETCH;
                     end
                 end
@@ -1723,7 +1804,7 @@ module v60 (
                     wen <= 1'b1; waddr <= 5'd31;    // (comb): SP -= 16
                     wdata <= rd_a - 32'd16;
                     xcp_parm <= 1'b0;
-                    pc <= xcp_tgt;
+                    pc <= xcp_tgt; pc_jump <= 1'b1;
                     state <= S_FETCH;
                 end
 
@@ -2084,6 +2165,13 @@ module v60 (
                     sp_shadow <= sp_shadow + 32'd4;
                     mask_idx <= mask_idx + 6'd1;
                     state <= S_POPM;
+                end
+
+                S_DWELL: begin
+                    if (dw_cnt == 8'd0)
+                        state <= dw_xcp ? S_XCP_SBR : S_WB;
+                    else
+                        dw_cnt <= dw_cnt - 8'd1;
                 end
 
                 S_TRAP: ;                           // unimplemented: stop

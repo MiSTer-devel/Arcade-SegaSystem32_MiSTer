@@ -267,9 +267,10 @@ module s32_sys (
     logic [4:0]  fq_count;
     logic [5:0]  live_len;           // the core's decoded length at fetch_pc
     logic        b60_fetch;
+    logic        pc_jump;
     v60_pfu u_pfu (
         .clk(clk), .rst(rst),
-        .pc(fetch_pc[23:0]),
+        .pc(fetch_pc[23:0]), .jump(pc_jump),
         .window(v_fetch_bytes), .fq_count(fq_count),
         .pf_req(pf_req), .pf_addr(pf_addr), .pf_grant(pf_grant),
         .pf_rdata(pf_rdata), .pf_done(pf_done)
@@ -312,7 +313,7 @@ module s32_sys (
     v60 u_v60 (
         .clk(clk), .rst(rst),
         .fetch_pc(fetch_pc), .fetch_bytes(v_fetch_bytes),
-        .fetch_len(live_len),
+        .fetch_len(live_len), .pc_jump(pc_jump),
         .mem_re(mem_re), .mem_we(mem_we), .mem_addr(mem_addr),
         .mem_wdata(mem_wdata), .mem_size(mem_size),
         .mem_rdata(mem_rdata),
@@ -323,8 +324,9 @@ module s32_sys (
         .irq(irq), .irq_vector(irq_vector),
         // The core steps on cen16 (the real 16.108 MHz clock) and waits
         // while the bus unit runs a bus cycle or the prefetch queue is
-        // short. No NEC document gives per-instruction cycle counts, so
-        // execution timing is not calibrated against the real part.
+        // short. NEC published clock counts for a handful of instructions
+        // only (v60.sv, the dwell table); the rest of the execution timing
+        // is the sequencer's steps and is not calibrated against the part.
         .wait_hold(bcu_busy || fetch_hold || !cen16)
     );
 

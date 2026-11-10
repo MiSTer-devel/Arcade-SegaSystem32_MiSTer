@@ -47,10 +47,77 @@ set_multicycle_path -hold 1 \
 # the slot shrink below 3 clk: the prefetch unit's paths are bounded by the
 # cen16 spacing at which its state is consumed, not by the nominal freeze,
 # and a looser claim lets unsettled fetch data be latched.
+#
+# INTO the core the claim is scoped to the two units that keep it: the bus
+# unit and the prefetch unit (2026-11-10). It used to be a bare
+# `-to u_v60`, which also gave two periods to everything else the core
+# samples, and none of it has them:
+#   - cen16 itself, the step enable of every core register (through
+#     wait_hold): it rises one clk before the step it enables;
+#   - the interrupt controller's pending/mask registers (irq, irq_vector):
+#     a request can be raised on any clk, the one before a step included;
+#   - the reset counter in the shell (core_hold -> rst).
+# Those are the only outside startpoints (STA: every register that is not
+# u_v60, u_bcu or u_pfu, -to u_v60). They are plain single-cycle paths
+# again. Checked at one period on the netlists built under the old rule they
+# all met it (Arcade-S32_20261109 seed 5: worst +1.565 ns), so no released
+# build was wrong; nothing made the fitter keep it so (board-design.md 9.3
+# item 8). Do not put the bare -to back, and scope any new input the same
+# way: prove its source holds still for two periods, or leave it out.
 set_multicycle_path -setup 2 -from [get_registers {*|v60:u_v60|*}]
 set_multicycle_path -hold 1 -from [get_registers {*|v60:u_v60|*}]
-set_multicycle_path -setup 2 -to [get_registers {*|v60:u_v60|*}]
-set_multicycle_path -hold 1 -to [get_registers {*|v60:u_v60|*}]
+set_multicycle_path -setup 2 -from [get_registers {*|v60_bcu:u_bcu|* *|v60_pfu:u_pfu|*}] -to [get_registers {*|v60:u_v60|*}]
+set_multicycle_path -hold 1 -from [get_registers {*|v60_bcu:u_bcu|* *|v60_pfu:u_pfu|*}] -to [get_registers {*|v60:u_v60|*}]
+
+# ---- inside that block: what does NOT have two periods ----------------------
+# ORDER MATTERS: these must come after the four u_v60 rules above (this
+# TimeQuest takes the last matching assignment), and they put back the one
+# period those blankets took away from logic that does not wait for cen16
+# (1, 2) or that can be launched the clk before a step (3).
+# Added 2026-11-09; before that both sets were checked at two periods. They
+# met one in every release netlist looked at (Arcade-S32_20261109 seed 5:
+# multiplier 14.52 ns, pc to the queue 11.99 ns, against 15.52), so nothing
+# on silicon was wrong, but nothing made the fitter keep it so.
+#
+# 1. The multiply/divide unit iterates once per clk_sys, and takes md_start
+#    (a one-clk strobe) and its operands the clk after the core's step. All
+#    paths INTO its registers are single-cycle. Its outputs go back to the
+#    core, which samples them at a later step: those keep the two periods.
+set_multicycle_path -setup 1 -to [get_registers {*|v60:u_v60|v60_muldiv:u_md|*}]
+set_multicycle_path -hold 0 -to [get_registers {*|v60:u_v60|v60_muldiv:u_md|*}]
+# 2. The prefetch unit follows pc on every clk_sys: the clk after a step it
+#    drains or flushes (base/head/count/flushed) on the new pc and on pc_jump,
+#    the core's one-clk control-transfer strobe, and its long-instruction
+#    snapshot (win_q/cnt_q) may load on that clk too. bufv and inflight are
+#    left at two periods: they change only with a bus-unit grant or done,
+#    which v60_bcu gates with cen16, so the clk after a step they hold
+#    whatever the pc terms are doing.
+set_multicycle_path -setup 1 \
+  -from [get_registers {*|v60:u_v60|pc[*] *|v60:u_v60|pc_jump}] \
+  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
+set_multicycle_path -hold 0 \
+  -from [get_registers {*|v60:u_v60|pc[*] *|v60:u_v60|pc_jump}] \
+  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
+# 3. The bus unit's completion (2026-11-10). v60_bcu loads done_q, and
+#    c_rdata on a read, on whatever clk the fabric finishes, and releases the
+#    core in the first cen16-high cycle of the last T3 that sees done_q. When
+#    the fabric finishes on the very clk cen16 rises, the core steps ONE clk
+#    after they loaded, and a read's data goes straight into that step
+#    (flags, the string compares, the write-back value). The sim/s32_board
+#    CRAGE monitor counts it on the ga2 boot: 70 of 53,568 data reads and
+#    15,766 of 135,420 writes are released at that age. These were under the
+#    two-period blanket; at one period the read data missed on both netlists
+#    looked at (Arcade-S32_20261109 seed 5: three flags_wdata bits and two
+#    multiplier enables, worst -1.09 ns at the slow corner), so this one is
+#    a real gap that earlier releases carried (board-design.md 9.3 item 8).
+#    The unit's other registers the core reads (run, tst, ci, n_cyc) change
+#    only on a step edge and keep the two periods.
+set_multicycle_path -setup 1 \
+  -from [get_registers {*|v60_bcu:u_bcu|c_rdata[*] *|v60_bcu:u_bcu|done_q}] \
+  -to   [get_registers {*|v60:u_v60|*}]
+set_multicycle_path -hold 0 \
+  -from [get_registers {*|v60_bcu:u_bcu|c_rdata[*] *|v60_bcu:u_bcu|done_q}] \
+  -to   [get_registers {*|v60:u_v60|*}]
 
 # ---- V60 wait-debt stall sample: 2 periods ----------------------------------
 # s32_sys wd_stall_q samples `bcu_busy || fetch_hold` only on cen16, exactly

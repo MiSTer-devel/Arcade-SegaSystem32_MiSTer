@@ -15,6 +15,20 @@
 // bus cycles that compete with data cycles in the bus unit (pf_req/
 // pf_grant), so instruction fetch costs bus time as on the real CPU.
 //
+// Every control transfer flushes (`jump`, the core's pc_jump), wherever it
+// lands. The uPD70616 data sheet (Sept. 1986, p.18, Prefetch Unit): "In the
+// event of a control transfer, interrupt or exception, the instruction
+// queue contents are flushed and a demand mode instruction fetch is made."
+// A real V70 (the V60's prefetch unit on a 32-bit bus) is seen doing it in
+// HP's 70632 emulator guide (64758-97004 p.2-30, analyzer capture): the
+// word at 10034 is prefetched, `BE/Z 00010033H` at 10029 is taken, and the
+// bus shows "fetch aft br" at 10033 followed by 10034 a second time, so a
+// target the queue already held is fetched again. Until 2026-11-09 this
+// unit told a jump only by where pc went and kept the queue when a taken
+// branch landed inside it: a short forward branch cost three or four
+// clocks where the real part pays a demand fetch (docs/OPEN-QUESTIONS.md
+// Q56; measured by tools/pcbtests/pt_cpi.py).
+//
 // Decode readiness lives in the core: the PFU presents `window` (22
 // bytes at pc, MSB-first) + `fq_count` (valid bytes AT pc); the core's
 // v60_ldec computes ilen and proceeds when fq_count >= ilen. That is safe:
@@ -71,6 +85,7 @@ module v60_pfu (
 
     // ---- core side (v60.sv sees window + fetch_hold, unchanged shape)
     input  logic [23:0]  pc,          // current instruction pointer
+    input  logic         jump,        // pc is a control-transfer target: flush
     output logic [175:0] window,      // 22 bytes at pc, MSB-first (byte0=[175:168])
     output logic [4:0]   fq_count,    // valid bytes available AT pc (0..26)
 
@@ -108,8 +123,8 @@ module v60_pfu (
     logic [23:0] delta_u;
     logic        in_range, this_flush;
     assign delta_u    = pc - base;
-    assign in_range   = (delta_u <= {19'd0, count});
-    assign this_flush = (delta_u != 24'd0) && !in_range;
+    assign in_range   = (delta_u <= {19'd0, count}) && !jump;
+    assign this_flush = jump || ((delta_u != 24'd0) && !in_range);
 
     wire [4:0] avail = in_range ? (count - delta_u[4:0]) : 5'd0;
     assign fq_count = avail;
@@ -189,7 +204,10 @@ module v60_pfu (
     logic [4:0]  head_pd;
     logic [23:0] base_pd;
     always_comb begin
-        if (delta_u == 24'd0) begin
+        if (jump) begin                // control transfer: flush, even
+            count_pd = 5'd0;           // onto an address the queue holds
+            head_pd = 5'd0;    base_pd = pc;
+        end else if (delta_u == 24'd0) begin
             count_pd = count;
             head_pd = head;    base_pd = base;
         end else if (in_range) begin
