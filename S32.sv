@@ -774,7 +774,9 @@ s32_pedals pedals
 // (s32_gun_aim.sv; docs/alien3-bringup.md §3). The OSD "Stick aim" (O[55:54],
 // shown for these two cabinets only) makes the stick move the aim instead,
 // at one of three speeds, for thumbsticks; Absolute stays the default
-// because a lightgun needs it. A usability setting, not hardware.
+// because a lightgun needs it. In Jurassic Park a moved aim stays inside the
+// $40-$C0 window the game maps to the screen, at half the stick rate
+// (docs/jpark-bringup.md §3). Usability settings, not hardware.
 wire [31:0] gun_ain;
 assign gun_cab = gun_harness | jp_cab;
 s32_gun_aim gun_aim
@@ -782,6 +784,7 @@ s32_gun_aim gun_aim
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
 	.y_lo(jp_cab ? 8'h00 : 8'h01),                // Jurassic Park: no MINMAX
 	.rel(status[55:54]),                          // OSD Stick aim
+	.win(jp_cab),                                 // Jurassic Park: $40-$C0 window
 	.dpad1(joystick_0[3:0]), .dpad2(joystick_1[3:0]),
 	.stick1(stick_0), .stick2(stick_1),
 	.mouse_ev(mouse_ev), .mouse_dx(mouse_dx), .mouse_dy(mouse_dy),
