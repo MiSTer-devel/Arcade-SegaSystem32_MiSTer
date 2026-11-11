@@ -118,6 +118,31 @@ set_multicycle_path -setup 1 \
 set_multicycle_path -hold 0 \
   -from [get_registers {*|v60_bcu:u_bcu|c_rdata[*] *|v60_bcu:u_bcu|done_q}] \
   -to   [get_registers {*|v60:u_v60|*}]
+# 4. The register file (2026-11-10). v60_regs has no step enable: it writes
+#    on whatever clk wen / psw_wen / flags_wen / preg_wen is high, and the
+#    sequencer clears those strobes on every clk (v60.sv, top of the clocked
+#    block), so each is high for exactly the clk after the step that set it.
+#    The strobe, its address and data (waddr, wdata, psw_wdata, flags_wdata,
+#    preg_wdata, pw_ovr_q, pw_sel_q) and `state` (it steers the privileged
+#    register select) all load on that same step edge and are captured ONE
+#    clk later. They were under the two-period blanket, the same gap as
+#    md_start in 1. On the netlist looked at (Arcade-S32_20261110 seed 9)
+#    they all met one period (worst +2.82 ns into the file, +2.96 from state), so
+#    nothing on silicon was wrong, but nothing made the fitter keep it so.
+#    All paths INTO the register file are single-cycle again, with one
+#    proven exception: exec_q reaches the file only through the privileged
+#    register select. It loads only in an instruction's S_DECODE step, and
+#    preg_wen is set only in S_EXEC or the task walk, at least one whole
+#    step later (and the next S_DECODE is two steps or more after any of
+#    them; an interrupt entry leaves exec_q alone), so it has been still
+#    for a slot and a clk when the file captures. It keeps the two periods (+0.91 ns
+#    at one on that netlist: it would be the group's tightest path for no
+#    reason). The file's outputs go back to the core, which samples them at
+#    a later step: those keep the two periods.
+set_multicycle_path -setup 1 -to [get_registers {*|v60:u_v60|v60_regs:u_regs|*}]
+set_multicycle_path -hold 0 -to [get_registers {*|v60:u_v60|v60_regs:u_regs|*}]
+set_multicycle_path -setup 2 -from [get_registers {*|v60:u_v60|exec_q[*]}] -to [get_registers {*|v60:u_v60|v60_regs:u_regs|*}]
+set_multicycle_path -hold 1 -from [get_registers {*|v60:u_v60|exec_q[*]}] -to [get_registers {*|v60:u_v60|v60_regs:u_regs|*}]
 
 # ---- V60 wait-debt stall sample: 2 periods ----------------------------------
 # s32_sys wd_stall_q samples `bcu_busy || fetch_hold` only on cen16, exactly

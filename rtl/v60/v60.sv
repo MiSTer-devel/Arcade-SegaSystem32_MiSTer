@@ -130,10 +130,94 @@ module v60 (
     //                        (pt_cpi); DW_INT is the rest. The bus unit
     //                        still times the cycles, so a slower stack or
     //                        a longer first instruction adds on top.
+    //
+    // Rows with data traffic (second pass, 2026-11-10). NEC's count is
+    // split into its bus cycles, two clocks each on the V70, and the
+    // clocks that are not bus cycles; the latter are the execution unit's
+    // and carry over, the former are replaced by this board's cycles,
+    // which the bus unit times (a 32-bit access is two cycles on the
+    // V60's 16-bit bus). The figures in brackets are that sum with the
+    // data in work RAM (five clocks a cycle), the instruction one bus
+    // word long and the queue full, which is what pt_cpi measures:
+    //   PUSHM 14 + 6N        14 fixed, and 4 clocks plus the write for
+    //                        each register [14 + 14N]. The sequencer used
+    //                        to scan the 32 mask bits one a clock
+    //                        (36 + 9N); it now picks the next register
+    //                        with a priority encoder.
+    //   POPM 20 + 7N         20 fixed, 5 clocks plus the read each
+    //                        [20 + 15N]; was 6 + 11N (register list).
+    //   STTASK 200, LDTASK 347 ("max context")  the walk over the task
+    //                        control block. The manual's largest TCB
+    //                        (Fig. 5-1) is 44 words: TKCW, four stacks, 31
+    //                        registers and, in virtual mode, the eight
+    //                        area-table registers, which both instructions
+    //                        move (p.7-53, p.7-104). Read that way the
+    //                        rows are 24 + 4W and 39 + 7W on the V70, with
+    //                        whole clocks a word: 2 clocks plus the write
+    //                        [24 + 12W] and 5 clocks plus the read
+    //                        [39 + 15W]. This board never runs virtual
+    //                        mode, so W is 36 at most. If NEC's "max" was
+    //                        the 36-word TCB instead, the figures at
+    //                        W = 36 would be 488 and 635, not 456 and
+    //                        579 (Q39). The fixed parts cannot be told
+    //                        from the per-word ones with one figure each.
+    //   MOVCU.B 20 + 5N      20 fixed. The per-element part is left at
+    //                        its bus cycles [20 + 10N; was 12 + 10N]:
+    //                        the V60 packs an aligned byte string into
+    //                        word cycles (data sheet p.7 and p.27, Q29),
+    //                        which this sequencer does not do, so NEC's
+    //                        5N is about 9N here if the V70 packs too and
+    //                        11N if it does not; the byte cycles the
+    //                        sequencer issues cost 10N. The set-up is used
+    //                        for every copy (movcu, movcd, the copy phase
+    //                        of movcfu, both element sizes); scans,
+    //                        compares and the fill phase have no row.
+    //   EXTBFZ 30            28 clocks plus the field's read [38]; was
+    //                        bus-bound at 22.
+    //   INSBFL 28            24 clocks plus the read and the write [44];
+    //                        was 32. extbfs/extbfl and insbfr take the
+    //                        figure of their kind.
+    // The list and TCB waits must be at least one step: the next register
+    // is picked during the wait (the guard below).
     localparam logic [7:0] DW_SHA = 8'd11;
     localparam logic [7:0] DW_INT = 8'd156;
+    localparam logic [7:0] DW_PUSHM0 = 8'd9;    // before the first register
+    localparam logic [7:0] DW_PUSHM1 = 8'd4;    // after each write
+    localparam logic [7:0] DW_POPM0  = 8'd15;
+    localparam logic [7:0] DW_POPM1  = 8'd4;    // after each register load
+    localparam logic [7:0] DW_STT0   = 8'd19;   // sttask: before TKCW
+    localparam logic [7:0] DW_STT1   = 8'd2;    //         after each write
+    localparam logic [7:0] DW_LDT0   = 8'd33;   // ldtask: before TKCW
+    localparam logic [7:0] DW_LDT1   = 8'd4;    //         after each load
+    localparam logic [7:0] DW_MOVC   = 8'd10;   // copy set-up
+    localparam logic [7:0] DW_EXTBF  = 8'd20;
+    localparam logic [7:0] DW_INSBF  = 8'd17;
+`ifndef SYNTHESIS
+    initial
+        if (DW_PUSHM0 == 8'd0 || DW_PUSHM1 == 8'd0 || DW_POPM0 == 8'd0 ||
+            DW_POPM1 == 8'd0 || DW_STT0 == 8'd0 || DW_STT1 == 8'd0 ||
+            DW_LDT0 == 8'd0 || DW_LDT1 == 8'd0)
+            $error("v60: a list wait of zero steps leaves mask_idx / tk_idx stale");
+`endif
     logic [7:0] dw_cnt;               // steps still to wait
-    logic       dw_xcp;               // S_DWELL leads to S_XCP_SBR, not S_WB
+    state_e     dw_ret;               // where S_DWELL goes when it is done
+
+    // The next register of a list: the highest set bit (pushm stores R31
+    // first) or the lowest (popm, and the TCB walk's 36 slots). Registered
+    // into mask_idx / tk_idx during the wait that precedes every access,
+    // so the encoder never sits in front of the register file or the bus.
+    function automatic logic [4:0] hi_bit32 (input logic [31:0] m);
+        hi_bit32 = 5'd0;
+        for (int i = 0; i < 32; i++) if (m[i]) hi_bit32 = 5'(i);
+    endfunction
+    function automatic logic [4:0] lo_bit32 (input logic [31:0] m);
+        lo_bit32 = 5'd0;
+        for (int i = 31; i >= 0; i--) if (m[i]) lo_bit32 = 5'(i);
+    endfunction
+    function automatic logic [5:0] lo_bit36 (input logic [35:0] m);
+        lo_bit36 = 6'd0;
+        for (int i = 35; i >= 0; i--) if (m[i]) lo_bit36 = 6'(i);
+    endfunction
     function automatic logic [7:0] md_steps (input logic mul, input logic [1:0] w);
         // S_MD_WAIT steps; the instruction's other six steps make NEC's
         // 23 (multiply) and 43 (divide) for a word
@@ -709,7 +793,7 @@ module v60 (
     // ------------------------------------------------------------ FSM regs
     logic [31:0] wb_res_q;            // result captured for WB states
     logic [31:0] mask_q;              // pushm/popm register mask
-    logic [5:0]  mask_idx;
+    logic [4:0]  mask_idx;            // the register being stored / loaded
     logic [31:0] sp_shadow;           // SP tracker across pushm/popm
 
     // NMI edge detect + pend/busy
@@ -987,13 +1071,13 @@ module v60 (
                 mem_wdata = xcp_parw;
             end
             S_TK_RD: begin                          // ldtask: next TCB word
-                if (tk_idx < 6'd36 && tk_mask[tk_idx]) begin
+                if (dw_cnt == 8'd0 && tk_mask != 36'd0) begin
                     mem_re = 1'b1; mem_addr = tk_ptr; mem_size = 3'd4;
                 end
             end
             S_TK_WR: begin                          // sttask: next TCB word
                 ra_a = 5'(tk_idx - 6'd5);
-                if (tk_idx < 6'd36 && tk_mask[tk_idx]) begin
+                if (dw_cnt == 8'd0 && tk_mask != 36'd0) begin
                     mem_we = 1'b1; mem_addr = tk_ptr; mem_size = 3'd4;
                     mem_wdata = (tk_idx < 6'd5) ? preg_rdata : rd_a;
                 end
@@ -1049,17 +1133,17 @@ module v60 (
                 mem_re = 1'b1; mem_addr = bs_sa; mem_size = 3'd1;
             end
             S_PUSHM: begin
-                ra_a = mask_idx[4:0];
-                if (mask_q != 32'd0 && mask_q[mask_idx[4:0]]) begin
+                ra_a = mask_idx;
+                if (dw_cnt == 8'd0 && mask_q != 32'd0) begin
                     mem_we = 1'b1; mem_addr = sp_shadow - 32'd4;
                     mem_size = 3'd4;
-                    mem_wdata = (mask_idx == 6'd31) ? psw : rd_a;
+                    mem_wdata = (mask_idx == 5'd31) ? psw : rd_a;
                 end
             end
             S_POPM: begin
-                if (mask_q != 32'd0 && mask_q[mask_idx[4:0]]) begin
+                if (dw_cnt == 8'd0 && mask_q != 32'd0) begin
                     mem_re = 1'b1; mem_addr = sp_shadow;
-                    mem_size = (mask_idx == 6'd31) ? 3'd2 : 3'd4;
+                    mem_size = (mask_idx == 5'd31) ? 3'd2 : 3'd4;
                 end
             end
             default: ;
@@ -1090,7 +1174,7 @@ module v60 (
             pc <= 32'h00FF_FFF0;                  // reset vector 0xFFFFF0
             pc_jump <= 1'b0;
             dw_cnt <= 8'd0;
-            dw_xcp <= 1'b0;
+            dw_ret <= S_WB;
             state <= S_FETCH;
             trap <= 1'b0;
             nmi_q <= 1'b0;
@@ -1118,7 +1202,7 @@ module v60 (
                         psw_wen <= 1'b1;
                         psw_wdata <= (psw & ~32'h2B07_0000)
                                    | 32'h8000_0000 | 32'h1000_0000;
-                        dw_cnt <= DW_INT - 8'd1; dw_xcp <= 1'b1;
+                        dw_cnt <= DW_INT - 8'd1; dw_ret <= S_XCP_SBR;
                         state <= S_DWELL;
                     end else if (irq && psw[18]) begin
                         // external interrupt: dispatch instead of executing;
@@ -1132,7 +1216,7 @@ module v60 (
                         psw_wdata <= (psw & ~32'h2B07_0000)
                                    | 32'h8000_0000 | 32'h1000_0000;
                         // interrupt response time (dwell table above)
-                        dw_cnt <= DW_INT - 8'd1; dw_xcp <= 1'b1;
+                        dw_cnt <= DW_INT - 8'd1; dw_ret <= S_XCP_SBR;
                         state <= S_DWELL;
                     end else begin
                         iw <= fetch_bytes;
@@ -1376,13 +1460,15 @@ module v60 (
                                 state <= S_POP_RD;
                             end
                             8'd39: begin            // pushm
-                                mask_q <= op1_val; mask_idx <= 6'd31;
+                                mask_q <= op1_val;
                                 sp_shadow <= rd_a;  // SP
+                                dw_cnt <= DW_PUSHM0;
                                 state <= S_PUSHM;
                             end
                             8'd40: begin            // popm
-                                mask_q <= op1_val; mask_idx <= 6'd0;
+                                mask_q <= op1_val;
                                 sp_shadow <= rd_a;
+                                dw_cnt <= DW_POPM0;
                                 state <= S_POPM;
                             end
                             8'd41: begin            // xch: two writebacks
@@ -1423,6 +1509,14 @@ module v60 (
                                 str_elem <= (s2_q == 2'd1) ? 32'd2 : 32'd1;
                                 str_i <= 32'd0;
                                 state <= S_STR_LEN1;
+                                if (exec_q == 8'd50 || exec_q == 8'd51 ||
+                                    exec_q == 8'd62) begin
+                                    // copies: NEC's set-up clocks (dwell
+                                    // table at the state declaration)
+                                    dw_cnt <= DW_MOVC - 8'd1;
+                                    dw_ret <= S_STR_LEN1;
+                                    state <= S_DWELL;
+                                end
                             end
                             8'd53: begin            // trap cc:vector
                                 // cc 11 is "never" in the TRAP condition
@@ -1508,6 +1602,7 @@ module v60 (
                                 pw_ovr_q <= 1'b1; pw_sel_q <= 4'd6;    // TR
                                 tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
                                 tk_idx <= 6'd0; tk_ptr <= op2_val;
+                                dw_cnt <= DW_LDT0;
                                 state <= S_TK_RD;
                             end
                             8'd79: begin                // sttask
@@ -1522,6 +1617,7 @@ module v60 (
                                 psw_wdata <= psw | 32'h1000_0000;
                                 tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
                                 tk_idx <= 6'd0; tk_ptr <= preg_rdata;
+                                dw_cnt <= DW_STT0;
                                 state <= S_TK_WR;
                             end
                             8'd82: begin                // getpsw
@@ -1562,8 +1658,18 @@ module v60 (
                             8'd72, 8'd73: begin
                                 // extbf* / insbf* / sch*bsu (Rad Mobile's
                                 // bit-stream decompressor): S_BF_LEN reads
-                                // blen, then the field or the search
+                                // blen, then the field or the search.
+                                // The field ops first wait the clocks
+                                // NEC's EXTBFZ / INSBFL rows have beyond
+                                // their bus cycles (dwell table); the
+                                // searches have no row.
                                 state <= S_BF_LEN;
+                                if (!is_sb) begin
+                                    dw_cnt <= (is_bf_ins ? DW_INSBF
+                                                         : DW_EXTBF) - 8'd1;
+                                    dw_ret <= S_BF_LEN;
+                                    state <= S_DWELL;
+                                end
                             end
                             8'd44: begin                // halt
                                 // NEC manual p.7-46: "The processor halts
@@ -1633,7 +1739,7 @@ module v60 (
                                     state <= S_WB;
                                     if (exec_q == 8'd11) begin  // sha
                                         dw_cnt <= DW_SHA - 8'd1;
-                                        dw_xcp <= 1'b0;
+                                        dw_ret <= S_WB;
                                         state <= S_DWELL;
                                     end
                                 end else begin
@@ -1809,13 +1915,17 @@ module v60 (
                 end
 
                 // ------------------------------------- ldtask / sttask
+                // A wait before every access, in which tk_idx takes the
+                // next slot; the counts are NEC's two task rows (dwell
+                // table).
                 S_TK_RD: begin
-                    if (tk_mask == 36'd0) begin
+                    if (dw_cnt != 8'd0) begin
+                        dw_cnt <= dw_cnt - 8'd1;
+                        tk_idx <= lo_bit36(tk_mask);
+                    end else if (tk_mask == 36'd0) begin
                         pc <= next_seq_pc; state <= S_FETCH;
-                    end else if (tk_mask[tk_idx])
+                    end else
                         state <= S_TK_CONSUME;      // read in flight
-                    else
-                        tk_idx <= tk_idx + 6'd1;
                 end
                 S_TK_CONSUME: begin
                     if (tk_idx < 6'd5) begin        // TKCW or a stack
@@ -1827,18 +1937,19 @@ module v60 (
                     end
                     tk_mask[tk_idx] <= 1'b0;
                     tk_ptr <= tk_ptr + 32'd4;
-                    tk_idx <= tk_idx + 6'd1;
+                    dw_cnt <= DW_LDT1;
                     state <= S_TK_RD;
                 end
                 S_TK_WR: begin
-                    if (tk_mask == 36'd0) begin
+                    if (dw_cnt != 8'd0) begin
+                        dw_cnt <= dw_cnt - 8'd1;
+                        tk_idx <= lo_bit36(tk_mask);
+                    end else if (tk_mask == 36'd0) begin
                         pc <= next_seq_pc; state <= S_FETCH;
                     end else begin
-                        if (tk_mask[tk_idx]) begin  // written this cycle
-                            tk_mask[tk_idx] <= 1'b0;    // (comb): advance
-                            tk_ptr <= tk_ptr + 32'd4;
-                        end
-                        tk_idx <= tk_idx + 6'd1;
+                        tk_mask[tk_idx] <= 1'b0;    // written this cycle
+                        tk_ptr <= tk_ptr + 32'd4;   // (comb): next slot
+                        dw_cnt <= DW_STT1;
                     end
                 end
 
@@ -2132,44 +2243,52 @@ module v60 (
                 end
 
                 // ------------------------------------------ pushm/popm
+                // Every access is preceded by a wait (dw_cnt, the dwell
+                // table at the state declaration), during which mask_idx
+                // takes the next listed register: R31 downward for pushm,
+                // R0 upward for popm. The access is issued (comb) in the
+                // step that finds dw_cnt at zero.
                 S_PUSHM: begin
-                    if (mask_q == 32'd0) begin
+                    if (dw_cnt != 8'd0) begin
+                        dw_cnt <= dw_cnt - 8'd1;
+                        mask_idx <= hi_bit32(mask_q);
+                    end else if (mask_q == 32'd0) begin
                         wen <= 1'b1; waddr <= 5'd31; wdata <= sp_shadow;
                         pc <= next_seq_pc; state <= S_FETCH;
-                    end else if (mask_q[mask_idx[4:0]]) begin
-                        // wrote this cycle (comb): advance
-                        mask_q[mask_idx[4:0]] <= 1'b0;
+                    end else begin
+                        // wrote this cycle (comb): next register
+                        mask_q[mask_idx] <= 1'b0;
                         sp_shadow <= sp_shadow - 32'd4;
-                        mask_idx <= mask_idx - 6'd1;
-                    end else
-                        mask_idx <= mask_idx - 6'd1;
+                        dw_cnt <= DW_PUSHM1;
+                    end
                 end
                 S_POPM: begin
-                    if (mask_q == 32'd0) begin
+                    if (dw_cnt != 8'd0) begin
+                        dw_cnt <= dw_cnt - 8'd1;
+                        mask_idx <= lo_bit32(mask_q);
+                    end else if (mask_q == 32'd0) begin
                         wen <= 1'b1; waddr <= 5'd31; wdata <= sp_shadow;
                         pc <= next_seq_pc; state <= S_FETCH;
-                    end else if (mask_q[mask_idx[4:0]]) begin
-                        state <= S_POPM_CONSUME;
                     end else
-                        mask_idx <= mask_idx + 6'd1;
+                        state <= S_POPM_CONSUME;    // read in flight
                 end
                 S_POPM_CONSUME: begin
-                    if (mask_idx == 6'd31) begin
+                    if (mask_idx == 5'd31) begin
                         psw_wen <= 1'b1;
                         psw_wdata <= {psw[31:16], mem_rdata[15:0]};
                     end else begin
-                        wen <= 1'b1; waddr <= mask_idx[4:0];
+                        wen <= 1'b1; waddr <= mask_idx;
                         wdata <= mem_rdata;
                     end
-                    mask_q[mask_idx[4:0]] <= 1'b0;
+                    mask_q[mask_idx] <= 1'b0;
                     sp_shadow <= sp_shadow + 32'd4;
-                    mask_idx <= mask_idx + 6'd1;
+                    dw_cnt <= DW_POPM1;
                     state <= S_POPM;
                 end
 
                 S_DWELL: begin
                     if (dw_cnt == 8'd0)
-                        state <= dw_xcp ? S_XCP_SBR : S_WB;
+                        state <= dw_ret;
                     else
                         dw_cnt <= dw_cnt - 8'd1;
                 end

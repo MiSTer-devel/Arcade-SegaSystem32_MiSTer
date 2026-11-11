@@ -321,10 +321,11 @@ Things you may notice, or may want to know:
 - **CPU timing.** NEC never published a full cycle table for the V60, so
   its timing comes mostly from its bus and prefetch logic: every taken
   branch empties the prefetch queue and fetches its target again, as the
-  data sheet describes. NEC did publish clock counts for a few
+  data sheet describes. NEC did publish clock counts for some
   instructions, and the core uses them: 23 clocks for a multiply, 43 for a
-  divide, 17 for an arithmetic shift, and the delay from an interrupt to
-  its handler. MAME charges a flat 8 clocks per instruction, so instruction
+  divide, 17 for an arithmetic shift, the delay from an interrupt to its
+  handler, and the register-list (PUSHM, POPM), bit-field and task-switch
+  instructions. MAME charges a flat 8 clocks per instruction, so instruction
   timing can differ slightly from MAME.
 - **CPU edge cases follow NEC's manual, not MAME.** A divide by zero takes
   the V60's Zero Divide exception, an overflowing extended divide (DIVX,
