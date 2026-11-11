@@ -590,9 +590,18 @@ wire f1en_seat = adc_board & board_cfg3[1];
 // INPUT_PORTS_START(arescue), the mainpcb half); the flight stick and the
 // collective are on the A/D board (below).
 wire ar_seat = adc_board & board_cfg3[2];
+// The gun cabinets' P1 gun also fires from the mouse, which already moves
+// its aim (s32_gun_aim): the left button is the trigger, the right button
+// the gun's button (Alien3's Bomb; Jurassic Park's gun has none). That makes
+// a mouse, or a lightgun reporting as one, play P1 on its own. hps_io holds
+// each packet's button state in ps2_mouse[2:0] until the next packet.
+// Usability, not hardware (GitHub issue 4).
+wire mouse_trig = ps2_mouse[0];
+wire mouse_bomb = ps2_mouse[1];
 wire [7:0] in_p1 = stick_harness ? pad(joystick_0)
-                 : jp_cab ? ~{7'd0, joystick_0[4]}
-                 : gun_harness ? ~{6'd0, joystick_0[5], joystick_0[4]}
+                 : jp_cab ? ~{7'd0, joystick_0[4] | mouse_trig}
+                 : gun_harness ? ~{6'd0, joystick_0[5] | mouse_bomb,
+                                   joystick_0[4] | mouse_trig}
                  : f1en_seat ? ~{6'd0, joystick_0[11], joystick_0[6]}
                  : ar_seat ? ~{6'd0, joystick_0[5], joystick_0[4]}
                  : paddle_harness ? ~{5'd0, joystick_0[12], joystick_0[11],

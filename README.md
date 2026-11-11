@@ -183,7 +183,9 @@ takes the aim back as soon as it moves. For a thumbstick, the OSD's Stick
 aim option (shown for the gun games) makes the stick move the aim instead,
 at a slow, medium or fast speed, and the aim stays where the stick is
 released; Absolute, the default, is what a lightgun needs. Fire (the trigger) is A and Bomb
-(the gun's button) B; Coin is Select. There are no start buttons: insert coins and pull a
+(the gun's button) B; for player 1, the mouse's left button also fires and
+its right button bombs, so a mouse, or a lightgun reporting as one, plays
+on its own. Coin is Select. There are no start buttons: insert coins and pull a
 trigger. Each player has a Service button (no default), and the game's
 service mode has a GUN ADJUSTMENT screen that calibrates the guns.
 
@@ -211,7 +213,7 @@ channels every frame and never uses them, so nothing is connected there.
 **Jurassic Park** is played with two mounted guns, read and aimed exactly
 as Alien3's (left analog stick or a USB lightgun reporting as one; the
 D-pad, and for player 1 a mouse; the same Stick aim option). Fire (the
-trigger) is A, Start is Start
+trigger) is A, and for player 1 also the mouse's left button; Start is Start
 and Coin is Select; Service and Test have no default. The cabinet's seat
 moved on a motion drive board, which the core does not move; at every
 power-on the game checks that board ("NET_WORK CHECKING NOW") for about
