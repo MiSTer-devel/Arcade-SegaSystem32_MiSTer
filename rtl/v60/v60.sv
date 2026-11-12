@@ -92,7 +92,9 @@ module v60 (
         // ldtask / sttask TCB walk, and chlvl's fourth (parameter) push
         S_TK_RD, S_TK_CONSUME, S_TK_WR, S_XCP_P4,
         S_HALT,                       // halt: wait for an accepted interrupt
-        S_DWELL                       // execution clocks with no bus work
+        S_DWELL,                      // execution clocks with no bus work
+        // mov.d: the source's two dwords, then the destination's
+        S_MOVD_RD, S_MOVD_RD2, S_MOVD_W1, S_MOVD_W2
     } state_e;
     state_e state;
 
@@ -380,14 +382,20 @@ module v60 (
     // after it is set), so a write whose register is not the ldpr operand
     // carries its select in pw_sel_q (ldtask's TR, TKCW and stack pointers)
     logic        pw_ovr_q;
-    logic [3:0]  pw_sel_q;
-    function automatic logic [3:0] tk_psel (input logic [5:0] slot);
-        tk_psel = (slot == 6'd0) ? 4'd8 : slot[3:0];   // TKCW, L0SP..L3SP
+    logic [4:0]  pw_sel_q;
+    function automatic logic [4:0] tk_psel (input logic [5:0] slot);
+        tk_psel = (slot == 6'd0) ? 5'd8 : {1'b0, slot[3:0]};   // TKCW, L0SP..L3SP
+    endfunction
+    // ldpr/stpr register ID: a word operand, legal range 0..31 (STPR p.7-103:
+    // Illegal Data Field outside it; the exception is not modelled, so such
+    // an ID selects the unassigned 31: reads 0, a load is dropped)
+    function automatic logic [4:0] preg_id (input logic [31:0] v);
+        preg_id = (|v[31:5]) ? 5'd31 : v[4:0];
     endfunction
 
     logic [31:0] preg_rdata, preg_wdata;
     logic        preg_wen;
-    logic [3:0]  preg_sel_core;
+    logic [4:0]  preg_sel_core;
     // Order matters. A registered task-switch write (pw_ovr_q) and the
     // sttask walk's reads come first; then S_XCP_SBR, which must not lose
     // to a stale exec_q: an interrupt is taken in S_FETCH with the PREVIOUS
@@ -395,17 +403,22 @@ module v60 (
     // read used to address stpr's register instead of SBR.
     assign preg_sel_core = pw_ovr_q ? pw_sel_q              // ldtask writes
                          : (state == S_TK_WR) ? tk_psel(tk_idx)  // sttask
-                         : (state == S_XCP_SBR) ? 4'd5   // irq: SBR
-                         : (exec_q == 8'd30) ? op1_val[3:0]
+                         : (state == S_XCP_SBR) ? 5'd5   // irq: SBR
+                         : (exec_q == 8'd30) ? preg_id(op1_val)
                          : (exec_q == 8'd53 || exec_q == 8'd77 ||
                             exec_q == 8'd83)
-                                               ? 4'd5    // trap/chlvl/brk: SBR
-                         : (exec_q == 8'd79) ? 4'd6      // sttask: TR
-                         : op2_val[3:0];
-    logic [3:0]  preg_sel;
+                                               ? 5'd5    // trap/chlvl/brk: SBR
+                         : (exec_q == 8'd79) ? 5'd6      // sttask: TR
+                         : preg_id(op2_val);
+    logic [4:0]  preg_sel;
+    // ldpr/stpr reach the stack-pointer register cache; the task walk
+    // (ldtask's registered writes, sttask's reads) the live banks
+    // (v60_regs header, manual p.8-27)
+    logic        preg_cache, sp_save;
     logic        preg_wen_m;
     logic [31:0] preg_wdata_m;
     assign preg_sel = preg_sel_core;
+    assign preg_cache = !(pw_ovr_q || state == S_TK_WR);
     assign preg_wen_m = preg_wen;
     assign preg_wdata_m = preg_wdata;
 
@@ -430,6 +443,7 @@ module v60 (
         .flags_wen(flags_wen), .flags_wdata(flags_wdata),
         .preg_sel(preg_sel), .preg_rdata(preg_rdata),
         .preg_wen(preg_wen_m), .preg_wdata(preg_wdata_m),
+        .preg_cache(preg_cache), .sp_save(sp_save),
         .sycw_o(sycw)
     );
 
@@ -447,11 +461,15 @@ module v60 (
     assign is_sb     = (exec_q == 8'd72) || (exec_q == 8'd73);
     assign is_dc     = (exec_q >= 8'd74) && (exec_q <= 8'd76);
     // which operand is resolved in bit-addressing mode
-    logic bit_op1, bit_op2, ea_bitmode;
+    logic bit_op1, bit_op2, ea_bitmode, ea_bitfield;
     assign bit_op1 = is_bs || is_bf_ext || is_sb;
     assign bit_op2 = is_bs || is_bf_ins;
     assign ea_bitmode = (state == S_OP2_EA || state == S_OP2_DEF) ? bit_op2
                                                                   : bit_op1;
+    // the bit-FIELD operands (extbf's source, insbf's destination) step
+    // [Rn+] / [-Rn] by 4; bit strings (movbs, sch0/1bs) by 1 (v60_ea header)
+    assign ea_bitfield = (state == S_OP2_EA || state == S_OP2_DEF) ? is_bf_ins
+                                                                   : is_bf_ext;
 
     // ---------------------------------------------------------------- EA
     logic [79:0] ea_bytes;
@@ -471,6 +489,7 @@ module v60 (
     v60_ea u_ea (
         .am_bytes(ea_bytes), .m(ea_m), .opsize(ea_size),
         .reg_val(rd_b), .idx_val(rd_a), .pc(pc), .bitmode(ea_bitmode),
+        .bitfield(ea_bitfield),
         .reg_sel(ea_regsel), .idx_sel(ea_idxsel),
         .ea(ea_out), .ea_kind(ea_kind),
         .base_wb(ea_wb), .base_wen(ea_wen),
@@ -609,11 +628,19 @@ module v60 (
         end
     endfunction
 
-    // second displacement of double-displacement AM (window at mode byte)
+    // second displacement of double-displacement AM (window at mode byte).
+    // Its size is the pair's: mode bits 7:5 = 0/1/2 for the Rn forms
+    // (m = 1), and the low two bits of FC/FD/FE for the PC forms (manual
+    // p.6-30: 11111100 / 11111101 / 11111110 carry 8-, 16- and 32-bit
+    // pairs). Before 2026-11-11 the PC forms always took the 32-bit layout,
+    // so disp1.8[disp2.8[PC]] and the 16-bit pair added bytes that belong
+    // to what follows the operand.
     function automatic logic [31:0] def_disp2 (input logic [79:0] amb);
-        unique case (amb[79:77])
-            3'd0: def_disp2 = {{24{amb[63]}}, amb[63:56]};
-            3'd1: def_disp2 = {{16{amb[47]}}, amb[47:40], amb[55:48]};
+        logic [1:0] k;
+        k = (amb[79:77] == 3'd7) ? amb[73:72] : amb[78:77];
+        unique case (k)
+            2'd0: def_disp2 = {{24{amb[63]}}, amb[63:56]};
+            2'd1: def_disp2 = {{16{amb[47]}}, amb[47:40], amb[55:48]};
             default:
                 def_disp2 = {amb[15:8], amb[23:16], amb[31:24], amb[39:32]};
         endcase
@@ -658,7 +685,16 @@ module v60 (
     assign op1_addr_only =
         (exec_q == 8'd19) || (exec_q == 8'd25) || (exec_q == 8'd26) ||
         (exec_q >= 8'd50 && exec_q <= 8'd52) ||  // movcu/movcd/skpcu
+        (exec_q == 8'd55) ||                     // schcu: src string address
+                                                 // (it read the first
+                                                 // element here until
+                                                 // 2026-11-11: a stray bus
+                                                 // read, even for length 0)
         (exec_q == 8'd64) ||                     // skpcd: src string address
+        (exec_q == 8'd38) ||                     // pop: write-only dest
+                                                 // (manual p.7-79 dst.w.w)
+        (exec_q == 8'd84) ||                     // mov.d: read in two
+                                                 // dwords by S_MOVD_RD/RD2
         (exec_q == 8'd61) ||                     // cmpc: src string address
         (exec_q == 8'd62) ||                     // movcfu: src string address
         (exec_q == 8'd63) ||                     // call: target address (op2,
@@ -672,11 +708,18 @@ module v60 (
     // register destinations always read via the port (width merge), which
     // is why this term must NOT include the registered op2_isreg flag
     logic op2_need_val;
+    // neg (6) and not (7) are ALU operations on the SOURCE (alu_a): their
+    // destination is write-only (manual p.7-69 / p.7-72, dst.x.w), so a
+    // memory destination is not read first.
     assign op2_need_val =
-        is_alu || is_shift || is_md ||
+        (is_alu && exec_q != 8'd6 && exec_q != 8'd7) || is_shift || is_md ||
         (exec_q >= 8'd33 && exec_q <= 8'd36) ||
         (exec_q == 8'd41) || (exec_q == 8'd43) ||
         (exec_q == 8'd52) || (exec_q == 8'd64) ||   // skpcu/skpcd: char value
+        (exec_q == 8'd55) ||                        // schcu: char value (a
+                                                    // memory char was never
+                                                    // read until 2026-11-11)
+        (exec_q == 8'd29) ||                        // ldpr: regID.w.r in memory
         (exec_q == 8'd77) ||                        // chlvl: arg.b.r
         (exec_q == 8'd78) ||                        // ldtask: TCBptr.w.r
         is_dc;                                      // adddc/subdc: dst digits
@@ -739,7 +782,19 @@ module v60 (
                 8'd19: exec_res = op1_ea_q;                 // movea
                 8'd20: exec_res = op1_val & wmask(s1_q);    // movz
                 8'd21: exec_res = sext(op1_val, s1_q);      // movs
-                8'd22: exec_res = op1_val;                  // movt
+                8'd22: begin                                // movt
+                    // OV set when a truncated bit differs from the sign of
+                    // the result, cleared otherwise; CY/S/Z unchanged
+                    // (manual p.7-62; never written before 2026-11-11)
+                    exec_res = op1_val;
+                    tv = sext(op1_val, s1_q);
+                    exec_flags = {psw[3],
+                                  (s2_q == 2'd0)
+                                      ? (tv[31:7]  != 25'd0 && tv[31:7]  != 25'h1FF_FFFF)
+                                      : (tv[31:15] != 17'd0 && tv[31:15] != 17'h1_FFFF),
+                                  psw[1:0]};
+                    exec_setflags = 1'b1;
+                end
                 8'd23: exec_res = {op1_val[7:0], op1_val[15:8],
                                    op1_val[23:16], op1_val[31:24]}; // rvbyt
                 8'd30: exec_res = preg_rdata;               // stpr
@@ -972,6 +1027,12 @@ module v60 (
                     // rsr / ret: pop PC (ret then pops AP via S_RETIS1/2)
                     mem_re = 1'b1; mem_addr = rd_a; mem_size = 3'd4;
                 end
+                if (exec_q == 8'd84) begin          // mov.d
+                    ra_a = op1_reg_q + 5'd1;        // register source: high
+                    if (op1_ismem) begin            // memory source: low
+                        mem_re = 1'b1; mem_addr = op1_ea_q; mem_size = 3'd4;
+                    end
+                end
                 if (exec_q == 8'd63) begin          // call: [-SP] <- AP
                     ra_b = 5'd29;
                     mem_we = 1'b1; mem_addr = rd_a - 32'd4; mem_size = 3'd4;
@@ -998,6 +1059,21 @@ module v60 (
                 // whose memory destination is only read for its low word.
                 if (is_dvx_op) begin
                     mem_re = 1'b1; mem_addr = op2_ea_q + 32'd4; mem_size = 3'd4;
+                end
+            end
+            S_MOVD_RD: begin                        // mov.d: source high
+                mem_re = 1'b1; mem_addr = op1_ea_q + 32'd4; mem_size = 3'd4;
+            end
+            S_MOVD_W1: begin                        // mov.d: low dword out
+                if (op2_ismem) begin
+                    mem_we = 1'b1; mem_addr = op2_ea_q; mem_size = 3'd4;
+                    mem_wdata = op1_val;
+                end
+            end
+            S_MOVD_W2: begin                        // mov.d: high dword out
+                if (op2_ismem) begin
+                    mem_we = 1'b1; mem_addr = op2_ea_q + 32'd4; mem_size = 3'd4;
+                    mem_wdata = op2_val;
                 end
             end
             S_DVX_WB: begin
@@ -1151,6 +1227,15 @@ module v60 (
     end
 
     // ------------------------------------------------------- FSM (clocked)
+    // Where operand 1's states lead. pop (38) comes through them LAST: "POP
+    // is a shorter encoding of ... mov.w [sp+], dst" (manual p.7-79), so
+    // the word is read and SP stepped first (S_EXEC, S_POP_RD) and the
+    // destination's address is formed from the stepped SP: `pop 4[sp]`
+    // stores at the old SP + 8 (MAME opPOP does the same). Until
+    // 2026-11-11 the address was formed first and it stored at old SP + 4.
+    state_e op1_next;
+    assign op1_next = (exec_q == 8'd38) ? S_WB
+                    : (op2_d == OD_NONE) ? S_EXEC : S_OP2_EA;
     logic [31:0] next_seq_pc;
     assign next_seq_pc = pc + {26'd0, len_q};
 
@@ -1165,13 +1250,15 @@ module v60 (
     always_ff @(posedge clk) begin
         wen <= 1'b0; psw_wen <= 1'b0; flags_wen <= 1'b0;
         preg_wen <= 1'b0; md_start <= 1'b0; pw_ovr_q <= 1'b0;
-        pc_jump <= 1'b0;
+        pc_jump <= 1'b0; sp_save <= 1'b0;
 
         nmi_q <= nmi;
         if (nmi && !nmi_q) nmi_pend <= 1'b1;      // edge latch (any state)
 
         if (rst) begin
-            pc <= 32'h00FF_FFF0;                  // reset vector 0xFFFFF0
+            pc <= 32'hFFFF_FFF0;                  // reset entry (manual
+                                                  // Figure 8-6; the bus
+                                                  // carries 24 bits of it)
             pc_jump <= 1'b0;
             dw_cnt <= 8'd0;
             dw_ret <= S_WB;
@@ -1255,6 +1342,8 @@ module v60 (
                         trap <= 1'b1; trap_op <= execop; state <= S_TRAP;
                     end else if (execop == 8'd39 || execop == 8'd40) begin
                         state <= S_OP1_EA;          // pushm/popm: mask op
+                    end else if (execop == 8'd38) begin
+                        state <= S_EXEC;            // pop: the stack first
                     end else if (ftype <= 4'd1 || ftype == 4'd3 ||
                                  ftype >= 4'd8) begin
                         state <= S_OP1_EA;
@@ -1270,7 +1359,7 @@ module v60 (
                             // register field: value through port B
                             op1_val <= rd_b;
                             op1_isreg <= 1'b1; op1_reg_q <= op1_regf;
-                            state <= (op2_d == OD_NONE) ? S_EXEC : S_OP2_EA;
+                            state <= op1_next;
                         end
                         default: begin              // OD_AM
                             unique case (ea_kind)
@@ -1278,13 +1367,11 @@ module v60 (
                                     op1_val <= rd_b;
                                     op1_isreg <= 1'b1;
                                     op1_reg_q <= ea_regsel;
-                                    state <= (op2_d == OD_NONE) ? S_EXEC
-                                                                : S_OP2_EA;
+                                    state <= op1_next;
                                 end
                                 3'd2: begin         // immediate
                                     op1_val <= am_imm(ea_bytes, s1_q);
-                                    state <= (op2_d == OD_NONE) ? S_EXEC
-                                                                : S_OP2_EA;
+                                    state <= op1_next;
                                 end
                                 3'd0: begin         // memory
                                     op1_ea_q <= ea_out; op1_ismem <= 1'b1;
@@ -1294,8 +1381,7 @@ module v60 (
                                         wdata <= ea_wb;
                                     end
                                     state <= op1_addr_only
-                                        ? ((op2_d == OD_NONE) ? S_EXEC
-                                                              : S_OP2_EA)
+                                        ? (op1_next)
                                         : S_OP1_RD;
                                 end
                                 3'd3: state <= S_OP1_DEF;
@@ -1317,12 +1403,12 @@ module v60 (
                                                            : ea_bitoff;
                     op1_ismem <= 1'b1;
                     state <= op1_addr_only
-                        ? ((op2_d == OD_NONE) ? S_EXEC : S_OP2_EA)
+                        ? (op1_next)
                         : S_OP1_RD;
                 end
                 S_OP1_RD: begin
                     op1_val <= mem_rdata;
-                    state <= (op2_d == OD_NONE) ? S_EXEC : S_OP2_EA;
+                    state <= op1_next;
                 end
 
                 // ------------------------------------------- operand 2
@@ -1439,6 +1525,20 @@ module v60 (
                             end
                             8'd28: begin            // nop
                                 pc <= next_seq_pc; state <= S_FETCH;
+                            end
+                            8'd84: begin            // mov.d (manual p.7-54)
+                                // The low half travels in op1_val, the
+                                // high half in op2_val (free: the
+                                // destination is write-only). Register
+                                // source: Rn is in op1_val already and
+                                // Rn+1 is on port A. Memory source: the
+                                // low dword's read is issued here.
+                                if (op1_ismem)
+                                    state <= S_MOVD_RD;
+                                else begin
+                                    op2_val <= op1_isreg ? rd_a : 32'd0;
+                                    state <= S_MOVD_W1;
+                                end
                             end
                             8'd29: begin            // ldpr
                                 preg_wdata <= op1_val;
@@ -1599,7 +1699,7 @@ module v60 (
                                 psw_wen <= 1'b1;
                                 psw_wdata <= psw & ~32'h1000_0000;
                                 preg_wen <= 1'b1; preg_wdata <= op2_val;
-                                pw_ovr_q <= 1'b1; pw_sel_q <= 4'd6;    // TR
+                                pw_ovr_q <= 1'b1; pw_sel_q <= 5'd6;    // TR
                                 tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
                                 tk_idx <= 6'd0; tk_ptr <= op2_val;
                                 dw_cnt <= DW_LDT0;
@@ -1615,6 +1715,7 @@ module v60 (
                                 // (MAME opSTTASK does the same).
                                 psw_wen <= 1'b1;
                                 psw_wdata <= psw | 32'h1000_0000;
+                                sp_save <= 1'b1;    // SP -> its register
                                 tk_mask <= {op1_val[30:0], sycw[11:8], 1'b1};
                                 tk_idx <= 6'd0; tk_ptr <= preg_rdata;
                                 dw_cnt <= DW_STT0;
@@ -1750,6 +1851,27 @@ module v60 (
                     end
                 end
 
+                S_MOVD_RD: begin                    // low in, high read issued
+                    op1_val <= mem_rdata;
+                    state <= S_MOVD_RD2;
+                end
+                S_MOVD_RD2: begin
+                    op2_val <= mem_rdata;
+                    state <= S_MOVD_W1;
+                end
+                S_MOVD_W1: begin                    // dst low: Rn or [EA]
+                    if (op2_isreg) begin
+                        wen <= 1'b1; waddr <= op2_reg_q; wdata <= op1_val;
+                    end
+                    state <= S_MOVD_W2;
+                end
+                S_MOVD_W2: begin                    // dst high: Rn+1 or [EA+4]
+                    if (op2_isreg) begin
+                        wen <= 1'b1; waddr <= op2_reg_q + 5'd1;
+                        wdata <= op2_val;
+                    end
+                    pc <= next_seq_pc; state <= S_FETCH;
+                end
                 S_DVX_RD: begin                     // divux mem: consume low
                     op2_val <= mem_rdata;           // dword (muldiv 'a');
                     md_start <= 1'b1;               // high read in flight
@@ -1837,7 +1959,10 @@ module v60 (
                     end else begin
                         psw_wen <= 1'b1; psw_wdata <= mem_rdata;
                         wen <= 1'b1; waddr <= 5'd31;
-                        wdata <= rd_a + 32'd8 + op1_val;
+                        // count.h.r: a halfword, zero-extended (manual
+                        // p.7-87); a register or memory operand brought
+                        // its upper half along until 2026-11-11
+                        wdata <= rd_a + 32'd8 + {16'd0, op1_val[15:0]};
                         state <= S_FETCH;
                     end
                 end
@@ -1857,7 +1982,9 @@ module v60 (
                     if (exec_q == 8'd27) begin
                         pc <= mem_rdata; pc_jump <= 1'b1; state <= S_FETCH;
                     end else begin
-                        wb_res_q <= mem_rdata; state <= S_WB;
+                        // pop: the destination operand now, with the
+                        // stepped SP in the register file (op1_next -> S_WB)
+                        wb_res_q <= mem_rdata; state <= S_OP1_EA;
                     end
                 end
 

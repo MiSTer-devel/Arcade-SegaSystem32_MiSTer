@@ -28,7 +28,10 @@
 // MAME am2.hxx bam2* / s_BAMTable2):
 //   disp[Rn], disp[PC]          ea = Rn / PC,          bit_off = disp
 //   [Rn], /addr                 ea = Rn / addr,        bit_off = 0
-//   [Rn+], [-Rn]                step 1 byte (MAME moddim 10)
+//   [Rn+], [-Rn]                step 1 byte for a bit string, 4 for a bit
+//                               field (bitfield = 1; manual p.6-19: "by 1
+//                               for the bit string data type or by 4 for
+//                               the bit field data type"; MAME moddim 10/11)
 //   disp[Rn](Rx), [Rn](Rx), disp[PC](Rx), /addr(Rx)
 //                               ea = base + disp,      bit_off = Rx (unscaled)
 //   deferred [disp[Rn]], [/addr], ...   K_DEF,         bit_off = 0
@@ -40,11 +43,12 @@
 module v60_ea (
     input  logic [79:0] am_bytes,   // mode byte = [79:72], extensions follow
     input  logic        m,
-    input  logic [1:0]  opsize,     // 0 byte, 1 half, 2 word
+    input  logic [1:0]  opsize,     // 0 byte, 1 half, 2 word, 3 doubleword
     input  logic [31:0] reg_val,    // value of register reg_sel
     input  logic [31:0] idx_val,    // value of index register (indexed modes)
     input  logic [31:0] pc,         // instruction start address
-    input  logic        bitmode,    // Format VIIb bit-string operand
+    input  logic        bitmode,    // Format VIIb/VIIc bit-addressed operand
+    input  logic        bitfield,   // ... of the bit-field type (extbf/insbf)
     output logic [4:0]  reg_sel,    // register named by the mode byte
     output logic [4:0]  idx_sel,    // index register (indexed modes)
     output logic [31:0] ea,
@@ -84,8 +88,15 @@ module v60_ea (
         d16 = {{16{am_bytes[63]}}, am_bytes[63:56], am_bytes[71:64]};
         d32 = {am_bytes[47:40], am_bytes[55:48], am_bytes[63:56], am_bytes[71:64]};
 
-        size = (bitmode || opsize == 2'd0) ? 32'd1
-             : (opsize == 2'd1) ? 32'd2 : 32'd4;
+        // autoincrement/decrement step and index scale by data type (manual
+        // p.6-11 table: byte 1, halfword 2, word 4, doubleword 8, bit string
+        // 1, bit field 4). The doubleword row is the 64-bit destination of
+        // mulx/mulux/divx/divux and both operands of mov.d; it was 4 before
+        // 2026-11-11 (MAME am2.hxx `case 3`: 8).
+        size = bitmode ? (bitfield ? 32'd4 : 32'd1)
+             : (opsize == 2'd0) ? 32'd1
+             : (opsize == 2'd1) ? 32'd2
+             : (opsize == 2'd2) ? 32'd4 : 32'd8;
         // Rx * size, size being 1, 2 or 4: a shift by 0, 1 or 2. Written as
         // the shift because `idx_val * size` synthesized as a 32x32 multiplier
         // (two DSP blocks, 6.5 ns of cell delay) in the middle of the core's
@@ -94,7 +105,8 @@ module v60_ea (
         // 32-bit value: a product modulo 2^32 by 2^k drops the top k bits.
         idx_sc = (bitmode || opsize == 2'd0) ? idx_val
                : (opsize == 2'd1) ? {idx_val[30:0], 1'b0}
-               :                    {idx_val[29:0], 2'b00};
+               : (opsize == 2'd2) ? {idx_val[29:0], 2'b00}
+               :                    {idx_val[28:0], 3'b000};
 
         ea       = 32'd0;
         ea_kind  = K_BAD;

@@ -332,8 +332,11 @@ Things you may notice, or may want to know:
 - **CPU edge cases follow NEC's manual, not MAME.** A divide by zero takes
   the V60's Zero Divide exception, an overflowing extended divide (DIVX,
   DIVUX) sets the overflow flag and keeps its destination, and a software
-  trap leaves interrupts enabled. MAME does none of these. No game here is
-  known to depend on them.
+  trap leaves interrupts enabled. An arithmetic shift left sets the
+  overflow flag whenever the sign changes during the shift, and a shift or
+  rotate count is a signed byte, so counts past the operand's width work
+  as the manual describes. MAME does none of these. No game here is known
+  to depend on them.
 - **Interval timers** load and start on every write, a zero count included,
   as the hardware notes describe (MAME ignores a zero count). Only Air
   Rescue's power-on writes one.

@@ -1,21 +1,34 @@
 // v60_shifter.sv — NEC V60 shift/rotate unit with PSW flag generation.
 //
-// Checked against MAME 0.288 single-step results from Golden Axe code.
-// Count is the signed low byte of the
-// source operand: positive = left, negative = right, zero = special case
-// (result unchanged; CY/OV cleared; S/Z still evaluated from the value).
+// Reference: NEC V60 Programmer's Reference Manual, SHA p.7-100, SHL
+// p.7-101, ROT p.7-89, ROTC p.7-90. Checked against MAME single-step results
+// from Golden Axe code where MAME follows the manual; where it does not
+// (below) the corestep packer corrects the golden.
+// Count is the signed low byte of the source operand, -128..+127: positive
+// = left, negative = right, zero = special case (result unchanged; CY/OV
+// cleared; S/Z still evaluated from the value).
 //
 // Flags ({CY,OV,S,Z} = PSW[3:0]):
 //   shl : CY = last bit shifted out, OV = 0
-//   sha : left  — CY = last bit out; OV = 1 if any bit shifted through the
-//                 sign position differed from the original sign
+//   sha : left  — CY = last bit out; OV = 1 "if the sign of the result
+//                 changes at anytime during the execution" (p.7-100): every
+//                 bit that passes through the sign position, the one that
+//                 ends up there included, must equal the original sign.
+//                 A count of n tests the top n+1 bits; a count >= width
+//                 tests them all and the zeros that follow. MAME's
+//                 SHIFTLEFT_OV tests only the top n bits (the ones shifted
+//                 out), so `sha #1` on 40h (result 80h) reads OV = 0 there
+//                 and could never set OV; the manual is followed here
+//                 (2026-11-11 audit, docs/OPEN-QUESTIONS.md Q68).
 //         right — CY = last bit out; OV = 0; sign-fills
 //   rot : CY = bit rotated into the far end (LSB after left / MSB after
-//         right rotate), OV = 0
+//         right rotate), OV = 0; count modulo the width
 //   rotc: (width+1)-bit rotate through carry, OV = 0
 //
-// CY is architecturally undefined for |count| > width; the MAME
-// comparison only covers |count| <= width.
+// |count| > width (shl, sha): zero, or the sign for sha right, is stored
+// (pp.7-100/101) and CY is the last bit shifted, i.e. a filled-in bit.
+// The whole range -128..+127 is honoured: before 2026-11-11 only the low
+// six bits of the count were used, so +64 shifted by 0 and -65 by 1.
 //
 // Purely combinational, built from a few wide funnel shifts shared by all
 // modes (one shifter per operation would cost several thousand ALMs):
@@ -40,7 +53,10 @@ module v60_shifter (
                            OP_ROT = 4'd12, OP_ROTC = 4'd13;
 
     logic signed [7:0] count_s;
-    logic [5:0]  n;              // |count|, clamped to 0..63
+    logic [7:0]  mag;            // |count|, 0..128
+    logic [5:0]  n;              // |count| for the shifts, saturated at 63
+    logic [5:0]  nr;             // |count| mod 64 for rot (width divides 64)
+    logic [6:0]  cv;             // |count| reduced toward mod (bits+1), rotc
     logic        left;
     logic [5:0]  bits;           // operation width in bits
     logic [31:0] mask, am;
@@ -53,6 +69,7 @@ module v60_shifter (
     logic [63:0] lsh;            // {0, am} << n
     logic [63:0] rsh;            // {am, 0} >> n
     logic [31:0] nmask;          // mask >> n (0 when n >= bits)
+    logic [31:0] nmask1;         // mask >> (n+1)
     logic [63:0] rep;            // am replicated to 64 bits (width-wise)
     logic [5:0]  rot_r;          // right-rotate amount, 0..bits-1
     logic [31:0] rot_res;
@@ -72,13 +89,15 @@ module v60_shifter (
         sign    = am[msb];
         count_s = count_in;
         left    = ~count_s[7];
-        n       = left ? count_s[5:0] : (~count_s[5:0] + 6'd1);
-        if (count_s == -8'sd64) n = 6'd63;   // clamp pathological case
+        mag     = left ? {1'b0, count_in[6:0]} : (~count_in + 8'd1);
+        n       = (mag > 8'd63) ? 6'd63 : mag[5:0];   // 63 >= every width
+        nr      = mag[5:0];
 
         // ------------------------------------------------ shared funnels
         lsh   = {32'd0, am} << n;
         rsh   = {am, 32'd0} >> n;
         nmask = (n >= bits) ? 32'd0 : (mask >> n);
+        nmask1 = nmask >> 1;
 
         // value replicated across 64 bits at the operation width
         unique case (width)
@@ -89,24 +108,26 @@ module v60_shifter (
 
         // rot: right-rotate amount (left rotate = bits - r); bits is a
         // power of two so mod is a mask
-        nmod  = n & (bits - 6'd1);
+        nmod  = nr & (bits - 6'd1);
         rot_r = left ? ((bits - nmod) & (bits - 6'd1)) : nmod;
         rot_res = 32'((rep >> rot_r)) & mask;
 
-        // rotc: (bits+1)-bit vector {CY, am}, rotate count mod (bits+1)
+        // rotc: (bits+1)-bit vector {CY, am}, rotate count mod (bits+1).
+        // |count| = 64*mag[7:6] + mag[5:0]; the 64s are folded in as their
+        // residues (64 = 1 mod 9, 13 mod 17, 31 mod 33; 128 = 2, 9, 29) so
+        // the chain of conditional subtractions stays short.
         cbits  = {1'b0, bits} + 7'd1;
-        crot_r = 6'((({1'b0, n} >= 2*cbits) ? ({1'b0, n} - 2*cbits)
-                   : ({1'b0, n} >= cbits)   ? ({1'b0, n} - cbits)
-                   :                          {1'b0, n})); // n<=63 < 3*(bits+1) for bits>=32;
-                                                           // for 8/16 widths see below
-        // for width 8 (cbits 9) n<=63 can exceed 3*9: reduce fully
         if (bits == 6'd8) begin
-            crot_r = n;
-            repeat (7) if (crot_r >= 6'd9) crot_r = crot_r - 6'd9;
+            cv = {1'b0, mag[5:0]} + {5'd0, mag[7:6]};            // <= 65
+            repeat (7) if (cv >= 7'd9) cv = cv - 7'd9;
         end else if (bits == 6'd16) begin
-            crot_r = n;
-            repeat (3) if (crot_r >= 6'd17) crot_r = crot_r - 6'd17;
+            cv = {1'b0, mag[5:0]} + (mag[7] ? 7'd9 : mag[6] ? 7'd13 : 7'd0);  // <= 76
+            repeat (4) if (cv >= 7'd17) cv = cv - 7'd17;
+        end else begin
+            cv = {1'b0, mag[5:0]} + (mag[7] ? 7'd29 : mag[6] ? 7'd31 : 7'd0); // <= 94
+            repeat (2) if (cv >= 7'd33) cv = cv - 7'd33;
         end
+        crot_r = cv[5:0];
         if (!left) begin
             // right rotc by r == left-equivalent handled via right funnel
         end else begin
@@ -144,8 +165,11 @@ module v60_shifter (
                 end
                 OP_SHA: begin
                     if (left) begin
-                        // OV: any of the top min(n,bits) bits differ from sign
-                        ov  = |((am ^ (sign ? mask : 32'd0)) & mask & ~nmask);
+                        // OV: any of the top min(n+1,bits) bits differs
+                        // from the sign, or (n >= bits) a set sign is
+                        // replaced by a shifted-in zero
+                        ov  = (|((am ^ (sign ? mask : 32'd0)) & mask & ~nmask1))
+                            | ((n >= bits) & sign);
                         cy  = lsh[bits];
                         res = lsh[31:0] & mask;
                     end else begin
