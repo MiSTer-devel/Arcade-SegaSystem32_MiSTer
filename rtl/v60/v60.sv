@@ -114,7 +114,11 @@ module v60 (
     //                        and halfword forms scale with the operand
     //                        (two multiplier bits or one quotient bit a
     //                        clock, on NEC's word figures): an
-    //                        extrapolation, Q39.
+    //                        extrapolation, Q39. The multiply rate is
+    //                        the V60's own: second-order Booth, "the
+    //                        multiplication operation for 32-bit
+    //                        integer is executed in 16 operation clock
+    //                        cycles" (Kaneko et al., FJCC 1986 p.1007).
     //   SHA.W 17             DW_SHA steps before the write-back step.
     //                        SHL/ROT/ROTC have no row and keep the
     //                        single-pass cost.
@@ -713,6 +717,14 @@ module v60 (
     // memory destination is not read first.
     assign op2_need_val =
         (is_alu && exec_q != 8'd6 && exec_q != 8'd7) || is_shift || is_md ||
+        (exec_q == 8'd56) || (exec_q == 8'd57) ||   // rem/remu: the dividend
+                                                    // (dst.x.rw, manual
+                                                    // p.7-84/85). A memory
+                                                    // destination was never
+                                                    // read until 2026-11-12:
+                                                    // the unit divided
+                                                    // whatever op2_val last
+                                                    // held
         (exec_q >= 8'd33 && exec_q <= 8'd36) ||
         (exec_q == 8'd41) || (exec_q == 8'd43) ||
         (exec_q == 8'd52) || (exec_q == 8'd64) ||   // skpcu/skpcd: char value

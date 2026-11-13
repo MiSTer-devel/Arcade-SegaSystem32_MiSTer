@@ -6,9 +6,25 @@
 // in the pre-fetch queue"), the NEC V60 information sheet (block diagram:
 // prefetch queue feeding the decoder) and the uPD71613 bus controller
 // datasheet (Table 1: instruction prefetch is its own bus cycle type).
-// That data cycles take priority over queue fills is this model's policy
-// (the only reading of "idle bus periods" that keeps operands flowing),
-// not a documented statement: docs/OPEN-QUESTIONS.md Q56.
+// Data cycles take priority over queue fills: Kaneko et al., "A 32-bit
+// CMOS Microprocessor with Six-Stage Pipeline Structure", FJCC 1986
+// p.1003 (branch fetch first, operand read / write next, prefetch last).
+//
+// When the unit asks (2026-11-12; before that it filled whenever two
+// bytes were free, count <= 14, the model's own guess). The same paper,
+// p.1002: "PFU requires a data transfer request to BCU when PFU detects
+// that more than 4B free area exist in ICQ", and p.1005: with the decoder
+// busy "instruction code pre-fetch operations perform 8 times". Eight bus
+// words fill sixteen bytes only if a request is for four bytes, two words
+// on the V60's 16-bit bus, and is made while four bytes are free; a
+// literal "more than four" with one word a request stops at twelve bytes
+// after six. NEC's later patents on this pipeline have the queue as four
+// 4-byte pockets filled a pocket at a time (EP0415366, EP0471888). So:
+// a request starts while count <= 12 and is two words (`pair` holds the
+// second); data cycles may still go between the two. What the paper does
+// not give is how pockets line up with addresses, so the pairing here
+// starts at whatever word the request begins on (docs/OPEN-QUESTIONS.md
+// Q56). `need_q` is this model's: see "Queue depth" below.
 //
 // The queue follows the core's pc (drain on sequential advance, flush on a
 // jump), tracks how many bytes are valid, and fills through 16-bit fetch
@@ -45,10 +61,17 @@
 // task entry at $0879D9 is `mov.b 1A[3830[R15]], 1E[3830[R15]]`, 20 bytes,
 // and with a 16-byte queue the core waited for it forever (2026-10-28,
 // docs/slipstrm-bringup.md §5). So the fill policy is the 16-byte queue's
-// (fill while count <= 14) EXCEPT while the instruction at pc is longer than
-// 16 bytes (`long_q`, below): then the queue fills on to 24, as many bytes
-// as the real decoder would have pulled through its queue. Every
-// instruction of 16 bytes or fewer sees exactly the old fill behaviour.
+// EXCEPT while the instruction at pc is longer than 16 bytes (`long_q`,
+// below): then the queue fills on to 24, as many bytes as the real decoder
+// would have pulled through its queue. The same streaming is why `need_q`
+// exists: with the four-byte rule a queue holding 13 to 15 bytes asks for
+// nothing, and an instruction longer than what it holds would wait for
+// ever where the real decoder would have taken its first bytes and freed
+// a pocket. While the instruction at pc is longer than the bytes the
+// queue has for it (the snapshot's length against its count: a length
+// decoder that sizes an instruction past the valid bytes has read every
+// byte it needed from valid ones, so the instruction really is longer),
+// the unit fills word by word as it did before.
 //
 // The long-instruction hint is decoded here, by its own v60_ldec, from a
 // SNAPSHOT of the window. Decoding straight off the window is the rotation
@@ -111,6 +134,8 @@ module v60_pfu (
     logic        inflight;             // a fetch cycle is running
     logic        flushed;              // flush seen since grant → drop word
     logic        long_q;               // the instruction at pc is > 16 bytes
+    logic        need_q;               // ... is longer than the queue holds
+    logic        pair;                 // second word of a 4-byte request owed
     logic        hph;                  // snapshot phase (every other clock)
     logic [175:0] win_q;               // window snapshot
     logic [4:0]  cnt_q;                // fq_count snapshot
@@ -193,7 +218,10 @@ module v60_pfu (
     wire        append_c  = retire_c && !flushed && !this_flush;
     wire [4:0]  count_n   = count + (append_c ? (fill_odd ? 5'd1 : 5'd2) : 5'd0);
     wire [23:0] next_wa   = append_c ? fill_wa + 24'd2 : fill_wa;
-    wire        want_fill = ((count_n <= 5'd14) || (long_q && count_n <= 5'd22))
+    // A request starts with four bytes free and is two words (header).
+    wire        want_fill = ((count_n <= 5'd12)
+                             || ((pair || need_q) && count_n <= 5'd14)
+                             || (long_q && count_n <= 5'd22))
                             && (!inflight || retire_c) && !this_flush;
     assign pf_req  = want_fill;
     assign pf_addr = next_wa;
@@ -255,10 +283,12 @@ module v60_pfu (
             base <= 24'd0; head <= 5'd0; count <= 5'd0;
             inflight <= 1'b0; flushed <= 1'b0; bufv <= 256'd0;
             long_q <= 1'b0; hph <= 1'b0; win_q <= 176'd0; cnt_q <= 5'd0;
+            need_q <= 1'b0; pair <= 1'b0;
         end else begin
             hph <= ~hph;
             if (hph) begin
                 long_q <= (cnt_q >= 5'd15) && (hint_len > 6'd16);
+                need_q <= (hint_len > {1'b0, cnt_q});
                 win_q  <= window;
                 cnt_q  <= avail;
             end
@@ -269,6 +299,14 @@ module v60_pfu (
 
             if (granting)    inflight <= 1'b1;
             else if (retire) inflight <= 1'b0;
+
+            // The first word of a request owes its second; a flush ends
+            // the request (the new stream starts its own). Loads on any
+            // clk, like `flushed`: S32.sdc rule 2 of the V60 block.
+            // Words fetched on need_q or long_q alone are not requests
+            // of this kind and owe nothing.
+            if (this_flush)    pair <= 1'b0;
+            else if (granting) pair <= !pair && (count_n <= 5'd12);
 
             // flushed protects the in-flight (or just-granted) fetch;
             // covers grant-and-flush the same cycle; cleared at retire

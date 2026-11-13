@@ -86,7 +86,8 @@ set_multicycle_path -hold 1 -from [get_registers {*|v60_bcu:u_bcu|* *|v60_pfu:u_
 set_multicycle_path -setup 1 -to [get_registers {*|v60:u_v60|v60_muldiv:u_md|*}]
 set_multicycle_path -hold 0 -to [get_registers {*|v60:u_v60|v60_muldiv:u_md|*}]
 # 2. The prefetch unit follows pc on every clk_sys: the clk after a step it
-#    drains or flushes (base/head/count/flushed) on the new pc and on pc_jump,
+#    drains or flushes (base/head/count/flushed, and since 2026-11-12 pair,
+#    which a flush clears) on the new pc and on pc_jump,
 #    the core's one-clk control-transfer strobe, and its long-instruction
 #    snapshot (win_q/cnt_q) may load on that clk too. bufv and inflight are
 #    left at two periods: they change only with a bus-unit grant or done,
@@ -94,10 +95,10 @@ set_multicycle_path -hold 0 -to [get_registers {*|v60:u_v60|v60_muldiv:u_md|*}]
 #    whatever the pc terms are doing.
 set_multicycle_path -setup 1 \
   -from [get_registers {*|v60:u_v60|pc[*] *|v60:u_v60|pc_jump}] \
-  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
+  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|pair *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
 set_multicycle_path -hold 0 \
   -from [get_registers {*|v60:u_v60|pc[*] *|v60:u_v60|pc_jump}] \
-  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
+  -to   [get_registers {*|v60_pfu:u_pfu|base[*] *|v60_pfu:u_pfu|head[*] *|v60_pfu:u_pfu|count[*] *|v60_pfu:u_pfu|flushed *|v60_pfu:u_pfu|pair *|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}]
 # 3. The bus unit's completion (2026-11-10). v60_bcu loads done_q, and
 #    c_rdata on a read, on whatever clk the fabric finishes, and releases the
 #    core in the first cen16-high cycle of the last T3 that sees done_q. When
@@ -163,18 +164,19 @@ set_multicycle_path -setup 2 -from [get_registers {*|v60_pfu:u_pfu|*}] -to [get_
 set_multicycle_path -hold 1 -from [get_registers {*|v60_pfu:u_pfu|*}] -to [get_registers {*|s32_sys:u_sys|wd_stall_q}]
 
 # ---- V60 prefetch long-instruction hint: 2 periods ------------------------
-# v60_pfu decodes its "instruction longer than 16 bytes" hint (long_q) from a
-# window snapshot (win_q, cnt_q). Snapshot and hint load on the same
+# v60_pfu decodes its "instruction longer than 16 bytes" hint (long_q), and
+# since 2026-11-12 its "longer than the queue holds" hint (need_q), from a
+# window snapshot (win_q, cnt_q). Snapshot and hints load on the same
 # alternate clocks (hph), so long_q captures win_q/cnt_q two periods after
 # they were launched: true by construction, not by observation. -from and
 # -to both: the hph enable path and the window -> win_q path stay
 # single-cycle (v60_pfu.sv header; docs/slipstrm-bringup.md §5.1).
 set_multicycle_path -setup 2 \
   -from [get_registers {*|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}] \
-  -to   [get_registers {*|v60_pfu:u_pfu|long_q}]
+  -to   [get_registers {*|v60_pfu:u_pfu|long_q *|v60_pfu:u_pfu|need_q}]
 set_multicycle_path -hold 1 \
   -from [get_registers {*|v60_pfu:u_pfu|win_q[*] *|v60_pfu:u_pfu|cnt_q[*]}] \
-  -to   [get_registers {*|v60_pfu:u_pfu|long_q}]
+  -to   [get_registers {*|v60_pfu:u_pfu|long_q *|v60_pfu:u_pfu|need_q}]
 
 # No exception covers the bus fabric. The core never reaches s32_v60bus
 # directly (the bus unit sits between them), and the decode from the bus
