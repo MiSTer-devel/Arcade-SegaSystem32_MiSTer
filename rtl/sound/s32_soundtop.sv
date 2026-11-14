@@ -16,9 +16,11 @@
 // before 2026-11-04 — for A/Bs against MAME, which models no analog
 // stage (the gnome-era captures were taken that way).
 //
-// YM3438 vs YM2612 DAC: jt12 models no YM2612 DAC "ladder" effect (its
-// accumulator is clean, full resolution), so the FM output already matches
-// the YM3438's DAC that the board carries.
+// YM3438 vs YM2612 DAC: jt12 models no YM2612 DAC "ladder" effect, which
+// is right for the YM3438 the board carries. Each channel's carriers add in
+// the chip's nine-bit saturating accumulator (jt12_acc.v, modified here
+// 2026-11-13; OPEN-QUESTIONS Q69), so a chip's output is at most six
+// channels at the rail: 1,530 DAC codes, 30,592 on snd_left / snd_right.
 //
 // Clocking: one clock domain. cen_fm paces both jt12 (8.054 MHz =
 // 32.2159 / 4; jt12's own /6 prescaler gives the 55.9 kHz sample rate),

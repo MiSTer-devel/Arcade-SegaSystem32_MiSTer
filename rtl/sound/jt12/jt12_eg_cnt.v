@@ -17,6 +17,25 @@
 	Version: 1.0
 	Date: 29-10-2018
 
+	
+	Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): the
+	counter is the chip's twelve-bit envelope timer. The port is the
+	original one.
+
+	The chip's envelope timer has twelve bits and adds its own carry back
+	in half a sample later, so it goes from FFF to 1 and never rests at 0:
+	4,095 states. The original file was a plain 15-bit counter (the slices
+	above bit 11 only served rates 0-7), one state more in every 4,096
+	ticks, so every envelope's steps fell one tick later than the chip's
+	every 12,288 samples. Here eg_cnt[11:0] is that timer, eg_cnt[12]
+	toggles at every tick (jt12_eg_step.v finds the tick with it: bit 0
+	does not change from FFF to 1) and eg_cnt[14:13] are 0.
+
+	Reference: Nuked-OPN2 ym3438.c (traced from the YM3438 die),
+	OPN2_Clock cycles 1 and 13: eg_timer += eg_timer_inc; eg_timer_inc =
+	eg_timer >> 12; eg_timer &= 0xfff. Checked by running it on the notes
+	of tools/fm/fm_eg_probe.py (docs/OPEN-QUESTIONS.md Q70).
+
 	*/
 
 module jt12_eg_cnt(
@@ -39,7 +58,10 @@ always @(posedge clk, posedge rst) begin : envelope_counter
 			// envelope counter increases every 3 output samples,
 			// there is one sample every 24 clock ticks
 			if( eg_cnt_base == 2'd2 ) begin
-				eg_cnt 		<= eg_cnt + 1'b1;
+				// Modified 2026-11-13 (see the header)
+				eg_cnt[11:0]	<= eg_cnt[11:0]==12'hfff ? 12'd1 : eg_cnt[11:0] + 12'd1;
+				eg_cnt[12]	<= ~eg_cnt[12];
+				eg_cnt[14:13]	<= 2'd0;
 				eg_cnt_base	<= 2'd0;
 			end
 			else eg_cnt_base <= eg_cnt_base + 1'b1;

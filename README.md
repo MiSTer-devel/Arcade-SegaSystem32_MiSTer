@@ -376,6 +376,33 @@ Things you may notice, or may want to know:
   DACs' output voltages, so the balance between FM and PCM was measured
   from a recording of a real board: PCM sits about 9 dB lower against FM
   than in MAME. A direct line-out recording would confirm the exact value.
+- **FM channel clipping.** A YM3438 adds the operators of one channel in
+  a nine-bit accumulator that saturates, so a voice with two or more loud
+  carriers clips inside the chip. The core does the same (a change made
+  to the jt12 FM core, in `jt12_acc.v`). Of the eighteen games' first two
+  and a half minutes, only Jurassic Park drives a channel that hard.
+- **FM tremolo, vibrato and envelopes.** More changes to jt12, all from
+  the chip's traced logic. With its LFO switched off, a YM3438 holds the
+  tremolo at full depth instead of none, and Holosseum plays one voice
+  that way: it was about 6 dB too loud and too bright for eighteen
+  seconds of one tune. And the LFO runs slightly faster than Yamaha's
+  published table (1.4 % at the rate the games use), so vibrato was that
+  much slow. And a note released while an SSG-EG envelope is in an
+  inverted phase carries on from the level it had; it used to jump or
+  be cut short, which clipped the end of the notes of one Spider-Man
+  voice. Envelopes step on the chip's own timer grid, one level at a
+  time, and no longer take a stray step when a note moves from attack
+  to decay or is released (the FM sat about a tenth of a decibel low).
+  The chip's phase generator, operator routing, feedback and frequency
+  registers were checked sample for sample against the die-traced
+  Nuked-OPN2 model, which found a channel's first operator keyed on a
+  sample early (and two modulation paths a sample off with it), the
+  envelope timer one state too long and, at the fastest envelope rates,
+  the doubled steps on the wrong timer ticks; all are corrected.
+  The FM output was then compared with MAME's FM model, voice by
+  voice, on what each of the eighteen games writes to the chips in its
+  first two and a half minutes: every voice's level agrees to within
+  1 dB.
 - **PCM resolution.** The PCM chip's output keeps all 16 bits, as Sega's
   documentation for this chip family describes (it drives the board's
   16-bit DAC directly). MAME treats it as a 10-bit part, so quiet or

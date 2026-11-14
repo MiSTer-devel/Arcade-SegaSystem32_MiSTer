@@ -20,6 +20,24 @@
   YM3438_APL.pdf
   Timer A = 144*(1024-NA)/Phi M
   Timer B = 2304*(256-NB)/Phi M
+
+  Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): what
+  register 27's two enable bits do (enable_status in jt12_timer, and
+  irq_n). The ports of jt12_timers are the original ones. The change is
+  upstream's own, taken by hand from jotego/jt12 commit a91e893
+  (2026-10-09, "CSM implemented"), without that commit's CSM rework.
+
+  On the chip a timer's overflow sets its status flag only while the
+  timer's enable bit (register 27 bit 2 for A, bit 3 for B) is set, and
+  /IRQ is the two flags. The original file set the flag at every overflow
+  and gated only /IRQ with the enable bits, so a timer left running with
+  its enable bit clear showed its flag in the status byte.
+
+  Reference: Nuked-OPN2 ym3438.c (traced from the YM3438 die),
+  OPN2_DoTimerA / OPN2_DoTimerB: timer_a_overflow_flag |=
+  timer_a_overflow & timer_a_enable; OPN2_ReadIRQPin: the two flags
+  ORed. MAME's ymfm does the same (fm_engine_base::engine_timer_expired).
+  Bench: sim/jt12_timers. docs/OPEN-QUESTIONS.md Q70.
   */
 
 
@@ -44,7 +62,9 @@ module jt12_timers(
 
 parameter num_ch = 6;
 
-assign irq_n = ~( (flag_A&enable_irq_A) | (flag_B&enable_irq_B) );
+// Modified 2026-11-13 (see the header): the flags are already gated by
+// the enable bits where they are set.
+assign irq_n = ~( flag_A | flag_B );
 
 /*
 reg zero2;
@@ -66,6 +86,7 @@ jt12_timer #(.CW(10)) timer_A(
     .zero       ( zero        ),
     .start_value( value_A     ),
     .load       ( load_A      ),
+    .enable_status( enable_irq_A ),
     .clr_flag   ( clr_flag_A  ),
     .flag       ( flag_A      ),
     .overflow   ( overflow_A  )
@@ -78,6 +99,7 @@ jt12_timer #(.CW(8),.FREE_EN(1)) timer_B(
     .zero       ( zero        ),
     .start_value( value_B     ),
     .load       ( load_B      ),
+    .enable_status( enable_irq_B ),
     .clr_flag   ( clr_flag_B  ),
     .flag       ( flag_B      ),
     .overflow   (             )
@@ -96,6 +118,7 @@ module jt12_timer #(parameter
     input   zero,
     input   [CW-1:0] start_value,
     input   load,
+    input   enable_status,
     input   clr_flag,
     output reg flag,
     output reg overflow
@@ -112,7 +135,7 @@ always@(posedge clk, posedge rst)
     else /*if(cen)*/ begin
         if( clr_flag )
             flag <= 1'b0;
-        else if( cen && zero && load && overflow ) flag<=1'b1;
+        else if( cen && zero && load && overflow && enable_status ) flag<=1'b1;
     end
 
 always @(*) begin

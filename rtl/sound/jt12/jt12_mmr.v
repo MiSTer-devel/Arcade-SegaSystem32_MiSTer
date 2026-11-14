@@ -16,6 +16,46 @@
     Author: Jose Tejada Gomez. Twitter: @topapate
     Version: 1.0
     Date: 14-2-2017
+
+    Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): the
+    frequency latches (latch_fnum3 and the "CH3 special registers" case
+    below). The ports are the original ones.
+
+    The high byte of a frequency is held in a latch until its low byte is
+    written. The chip has two latches, each shared by all channels and
+    both banks: one for A4-A6 (the channels' frequencies) and one for
+    AC-AE (channel 3's per-operator frequencies). And a write to A8-AA on
+    bank 1 does not reach channel 3's operators: the chip files it under
+    channels 4-6, where nothing reads it. The original file had one latch
+    for both kinds, so a channel's low byte written after an AC-AE high
+    byte (or an operator's after an A4-A6 one) took the wrong block and
+    F-number bits, and it took A8-AA from either bank.
+
+    Reference: Nuked-OPN2 ym3438.c, OPN2_DoRegWrite (traced from the
+    YM3438 die): case 0xa4 sets reg_a4, case 0xac sets reg_ac; case 0xa0
+    builds fnum[channel] from reg_a4, case 0xa8 fnum_3ch[channel] from
+    reg_ac, with channel 3-5 for bank 1; the special mode reads
+    fnum_3ch[0..2] only. MAME's ymfm keeps the two kinds apart as well
+    (ymfm_opn.cpp, opn_registers_base::write, latchindex).
+    Check: tools/fm/fm_latch_probe.py (docs/OPEN-QUESTIONS.md Q70).
+
+    Also modified 2026-11-13: which data port a mode register takes its
+    data from (mode_wr below). The address write fixes the register and
+    its bank. For the FM registers (30 and up) the data may then come
+    through either data port; for the mode registers (21-2C: test, LFO,
+    timers, key-on, DAC) the chip takes it only if both the address and
+    the data were written on bank 0. The original file never looked at
+    the data write's bank, and took the DAC registers 2A-2C from either
+    address bank.
+
+    Reference: Nuked-OPN2 ym3438.c, OPN2_DoIO: the mode-register switch
+    runs under "write_d_en && (write_data & 0x100) == 0" on
+    write_fm_mode_a (the address with its bank bit), while
+    write_fm_data, which commits the FM registers, is set by any data
+    write after an FM address write. Upstream jt12 (commit 1076fae,
+    2026-08-30) and MAME's ymfm drop every data write whose bank differs
+    from the address's, the FM registers' too; the die-traced model does
+    not, and that is what is followed here.
     */
 
 
@@ -176,6 +216,7 @@ reg csm, effect;
 reg [ 2:0] block_ch3op2,  block_ch3op3,  block_ch3op1;
 reg [10:0] fnum_ch3op2, fnum_ch3op3, fnum_ch3op1;
 reg [ 5:0] latch_fnum;
+reg [ 5:0] latch_fnum3; // AC-AE: channel 3's operators (modified 2026-11-13)
 
 
 reg [2:0] up_ch;
@@ -194,6 +235,9 @@ generate
 endgenerate
 
 reg part;
+// Modified 2026-11-13 (see the header): a mode register is written only
+// with its address and this data write both on bank 0
+wire mode_wr = !part && !addr[1];
 reg [5:0] exbank;
 
 `ifdef SIMULATION
@@ -264,6 +308,7 @@ always @(posedge clk) begin : memory_mapped_registers
         { block_ch3op3, fnum_ch3op3 } <= {3'd0, 11'd0 };
         { block_ch3op2, fnum_ch3op2 } <= {3'd0, 11'd0 };
         latch_fnum <= 0;
+        latch_fnum3 <= 0;
         op_din     <= 0;
         part       <= 0;
     end else begin
@@ -286,14 +331,14 @@ always @(posedge clk) begin : memory_mapped_registers
             end else begin
                 // Global registers
                 ch_din <= din;
-                if( selected_register == REG_KON && !part ) begin
+                if( selected_register == REG_KON && mode_wr ) begin
                     up_keyon <= 1;
                     op_din   <= din;
                 end else begin
                     up_keyon <= 0;
                 end
                 // General control (<0x20 registers and A0==0)
-                if(!part) begin
+                if( mode_wr ) begin
                     casez( selected_register)
                         //REG_TEST: lfo_rst <= 1'b1; // regardless of din
                         8'h0?: psg_wr_n <= 1'b0;
@@ -320,18 +365,21 @@ always @(posedge clk) begin : memory_mapped_registers
                 end
 
                 // CH3 special registers
+                // Modified 2026-11-13 (see the header): A8-AA take the AC-AE
+                // latch and are bank 0's only; A4-A6 and AC-AE latch apart.
                 casez( selected_register)
-                    8'hA9: { block_ch3op1, fnum_ch3op1 } <= { latch_fnum, din };
-                    8'hA8: { block_ch3op3, fnum_ch3op3 } <= { latch_fnum, din };
-                    8'hAA: { block_ch3op2, fnum_ch3op2 } <= { latch_fnum, din };
+                    8'hA9: if(!part) { block_ch3op1, fnum_ch3op1 } <= { latch_fnum3, din };
+                    8'hA8: if(!part) { block_ch3op3, fnum_ch3op3 } <= { latch_fnum3, din };
+                    8'hAA: if(!part) { block_ch3op2, fnum_ch3op2 } <= { latch_fnum3, din };
                     // According to http://www.mjsstuf.x10host.com/pages/vgmPlay/vgmPlay.htm
                     // There is a single fnum latch for all channels
-                    8'hA4, 8'hA5, 8'hA6, 8'hAD, 8'hAC, 8'hAE: latch_fnum <= din[5:0];
+                    8'hA4, 8'hA5, 8'hA6: latch_fnum  <= din[5:0];
+                    8'hAC, 8'hAD, 8'hAE: latch_fnum3 <= din[5:0];
                     default:;   // avoid incomplete-case warning
                 endcase
 
                 // YM2612 PCM support
-                if( use_pcm==1 ) begin
+                if( use_pcm==1 && mode_wr ) begin
                     casez( selected_register)
                         REG_DACTEST: pcm[0] <= din[3];
                         REG_PCM:

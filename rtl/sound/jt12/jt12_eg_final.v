@@ -17,6 +17,33 @@
 	Version: 1.0
 	Date: 29-10-2018
 
+	Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): the
+	polarity of the LFO's amplitude-modulation triangle (one line, marked
+	below). The ports are the original ones.
+
+	The chip's AM value is the LFO step counter's low six bits, INVERTED
+	while bit 6 is 0: it starts at its maximum (63) when the counter is 0
+	and falls. The original file inverted them while bit 6 is 1, so its
+	triangle started at 0 and rose. The two differ by more than phase: the
+	counter is held at 0 while the LFO is disabled (register 22 bit 3
+	clear), so on the chip an operator with AM enabled, in a channel whose
+	AMS is not 0, is attenuated by the full depth for as long as the LFO is
+	off (1.4 / 5.9 / 11.8 dB for AMS 1 / 2 / 3), and the original file
+	attenuated it by nothing. Holosseum does exactly that for eighteen
+	seconds of one tune (docs/OPEN-QUESTIONS.md Q70).
+
+	References:
+	  - Nuked-OPN2 ym3438.c, OPN2_Clock / OPN2_EnvelopePrepare (traced from
+	    the YM3438 die): lfo_am = (lfo_cnt & 0x40) ? lfo_cnt & 0x3f :
+	    lfo_cnt ^ 0x3f, doubled, then shifted right by 7 / 3 / 1 / 0 for
+	    AMS 0-3; lfo_cnt is forced to 0 while the LFO is disabled.
+	  - MAME ymfm_opn.cpp, opn_registers_base::clock_noise_and_lfo ("first
+	    half of the AM period (bit 6 == 0) is inverted"; with the LFO
+	    disabled the AM value is 0x3f).
+	  - The note quoted in jt12_lfo.v's own header says the same: the
+	    counter's bits 0:5 "XORed with inversion of bit 6".
+	Bench: sim/jt12_egfinal.
+
 	*/
 
 module jt12_eg_final(
@@ -35,8 +62,11 @@ reg	[11:0]	sum_eg_tl_am;
 reg	[ 5:0]	am_inverted;
 reg [ 9:0]	eg_pream;
 
+// Modified 2026-11-13 (see the header): inverted while bit 6 is 0, as the
+// chip. The original line was
+//	am_inverted = lfo_mod[6] ? ~lfo_mod[5:0] : lfo_mod[5:0];
 always @(*) begin
-	am_inverted = lfo_mod[6] ? ~lfo_mod[5:0] : lfo_mod[5:0];
+	am_inverted = lfo_mod[6] ? lfo_mod[5:0] : ~lfo_mod[5:0];
 end
 
 always @(*) begin

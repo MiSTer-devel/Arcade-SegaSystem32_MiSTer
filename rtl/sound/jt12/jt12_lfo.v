@@ -16,6 +16,37 @@
 	Author: Jose Tejada Gomez. Twitter: @topapate
 	Version: 1.0
 	Date: 25-2-2017
+
+	Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): the LFO's
+	divider, in the always block at the end of the file. The ports are the
+	original ones.
+
+	The chip's LFO step counter advances every 108 / 77 / 71 / 67 / 62 /
+	44 / 8 / 5 samples for rates 0-7. The original file counted from 0 to
+	those values inclusive, one sample more (109 ... 6), which is the
+	application manual's table of frequencies; the chip is that one sample
+	faster (0.9 % at rate 0, 1.4 % at rate 2, 20 % at rate 7). Two smaller
+	things follow the chip as well: the divider compares by "all the bits
+	of the value are set" and not by equality, and it is not reset while
+	the LFO is disabled (only the step counter is held at 0).
+
+	References:
+	  - Nuked-OPN2 ym3438.c (traced from the YM3438 die), OPN2_UpdateLFO,
+	    run every cycle, with lfo_inc set in cycle 23 only:
+	        if ((lfo_quotient & lfo_cycles[freq]) == lfo_cycles[freq])
+	            { lfo_quotient = 0; lfo_cnt++; }
+	        else lfo_quotient += lfo_inc;
+	        lfo_cnt &= lfo_en;
+	    lfo_cycles = { 108, 77, 71, 67, 62, 44, 8, 5 }. The quotient reaches
+	    the value in cycle 23 of a sample and is cleared in the next cycle,
+	    so a step takes that many samples, not one more.
+	  - MAME ymfm_opn.cpp, opn_registers_base::clock_noise_and_lfo: "tests
+	    on the hardware and nuked bear out an off-by-one error exists that
+	    causes the max LFO rate to be faster than published" (its counter
+	    gives the same 108 ... 5).
+	  - Against: the YM3438 application manual's LFO table (3.98 ... 72.2
+	    Hz), which is the 109 ... 6 the original file had.
+	Bench: sim/jt12_lfo. docs/OPEN-QUESTIONS.md Q70.
 	*/
 
 
@@ -75,7 +106,7 @@ module jt12_lfo(
 reg [6:0] cnt, limit;
 
 always @(*)
-	case( lfo_freq )	// same values as in MAME
+	case( lfo_freq )	// the chip's compare values (Nuked-OPN2 lfo_cycles)
 		3'd0: limit = 7'd108;
 		3'd1: limit = 7'd77;
 		3'd2: limit = 7'd71;
@@ -86,17 +117,26 @@ always @(*)
 		3'd7: limit = 7'd5;
 	endcase
 
-always @(posedge clk) 
-	if( rst || !lfo_en )
+// Modified 2026-11-13 (see the header). The chip's process, cycle for
+// cycle: the divider is compared in every cycle and, when every bit of
+// `limit` is set in it, cleared with a step of the LFO counter; otherwise
+// it counts once a sample. It reaches `limit` in the counting cycle and is
+// cleared in the next one, so a step takes `limit` samples. The step
+// counter is held at 0 while the LFO is disabled; the divider runs on.
+wire hit = (cnt & limit) == limit;
+
+always @(posedge clk)
+	if( rst )
 		{ lfo_mod, cnt } <= 14'd0;
-	else if( clk_en && zero) begin
-		if( cnt == limit ) begin
-			cnt <= 7'd0;
-			lfo_mod <= lfo_mod + 1'b1;
+	else begin
+		if( clk_en ) begin
+			if( hit ) begin
+				cnt     <= 7'd0;
+				lfo_mod <= lfo_mod + 1'b1;
+			end else if( zero )
+				cnt <= cnt + 1'b1;
 		end
-		else begin
-			cnt <= cnt + 1'b1;
-		end
+		if( !lfo_en ) lfo_mod <= 7'd0;
 	end
-	
+
 endmodule

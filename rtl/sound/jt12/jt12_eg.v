@@ -17,6 +17,28 @@
     Version: 1.0
     Date: 29-10-2018
 
+    Modified 2026-11-13 for the Sega System 32 core (RetroShrimp): the
+    envelope level at a key-off that arrives while SSG-EG has the output
+    inverted (eg_koff_I below, and the one line that uses it). The ports
+    are the original ones.
+
+    While SSG-EG inverts an operator, its output attenuation is 200h minus
+    the stored level. When the key goes off the chip stores that inverted
+    value as the level and releases from it, so the sound carries on from
+    where it was. The original file dropped the inversion and kept the
+    stored level (jt12_eg_ctrl.v says so: "this can produce a glitch in
+    the output"): a note released low on an inverted ramp jumped up to
+    full level, one released near its top was cut by up to 48 dB.
+
+    References:
+      - Nuked-OPN2 ym3438.c, OPN2_EnvelopeADSR (traced from the YM3438
+        die): ssg_level = eg_ssg_inv ? (512 - level) & 0x3ff : level;
+        if (koff_event) level = ssg_level;
+      - MAME ymfm_fm.ipp, fm_operator::start_release: "if attenuation if
+        inverted due to SSG-EG, snap the inverted attenuation as the
+        starting point".
+    Check: tools/fm/fm_ssg_probe.py (docs/OPEN-QUESTIONS.md Q70).
+
     */
 
 module jt12_eg (
@@ -82,6 +104,11 @@ reg sum_in_III;
 wire [9:0] eg_in_I, pure_eg_out_III, eg_next_III, eg_out_IV;
 reg  [9:0] eg_in_II, eg_in_III, eg_in_IV;
 
+// Modified 2026-11-13 (see the header): a key-off during an inverted SSG-EG
+// phase takes the inverted value as the level the release starts from.
+wire [9:0] eg_koff_I = ( keyoff_now_I && ssg_inv_in_I ) ?
+                       ( 10'h200 - eg_in_I ) : eg_in_I;
+
 
 
 jt12_eg_comb u_comb(
@@ -140,7 +167,7 @@ jt12_eg_comb u_comb(
 );
 
 always @(posedge clk) if(clk_en) begin
-    eg_in_II    <= eg_in_I;
+    eg_in_II    <= eg_koff_I;
     attack_II   <= state_next_I[0];
     base_rate_II<= base_rate_I;
     ssg_en_II   <= ssg_en_I;

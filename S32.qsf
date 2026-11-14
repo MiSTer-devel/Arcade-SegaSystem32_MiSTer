@@ -67,7 +67,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
 # is usually in the framework's HDMI scaler (ascal), though the core clock can
 # also miss; if a source change leaves either slightly negative, try another
 # seed.
-set_global_assignment -name SEED 37
+set_global_assignment -name SEED 11
 
 # This tree is the release configuration of the core: the sources carry no
 # configuration switches, so no core VERILOG_MACRO is needed here. The lines
@@ -127,8 +127,11 @@ set_instance_assignment -name MAX_FANOUT 12 -to "ascal|o_vcpt[7]~0"
 # the log-sine and exponent ROMs (256 x 12 and 256 x 10) 1 each: 8 blocks
 # for ~11 Kbit. These build them from registers and LUTs instead. The shift-
 # register setting covers all of jt12_op: with phasemod_sh alone, Quartus
-# made its prev2_buffer delay line an altshift_taps instead. jt12 is
-# vendored and never edited, so the lever is here, not in its source.
+# made its prev2_buffer delay line an altshift_taps instead. These jt12
+# files are the upstream ones, so the lever is here, not in their source.
+# (Several jt12 files are modified, rtl/sound/jt12/README.md; one of them,
+# jt12_acc.v, carries the same setting for its six-deep channel line as
+# an altera_attribute.)
 set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym1|jt12_top:u_jt12|jt12_op:u_op"
 set_instance_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym2|jt12_top:u_jt12|jt12_op:u_op"
 set_instance_assignment -name AUTO_ROM_RECOGNITION OFF -to "emu:emu|s32_board:board|s32_sys:u_sys|s32_soundtop:u_snd|jt12:u_ym1|jt12_top:u_jt12|jt12_op:u_op|jt12_logsin:u_logsin"

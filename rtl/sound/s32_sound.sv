@@ -13,8 +13,14 @@
 // which the V60 reaches by taking the Z80's bus: see "Bus takeover" and
 // "shared RAM" below).
 // I/O: 80-8F YM1, 90-9F YM2, A0-AF/B0-BF bank, C0-CF int-lo,
-// D0-D7 int-hi (D0-D3 mirrored at D4-D7; D8-DF unknown, writes dropped),
-// F1 dummy.
+// D0-D7 int-hi (D0-D3 mirrored at D4-D7; D8-DF unknown, writes dropped).
+// 00-7F and E0-FF are unused and read FF (s32tech, "Z80 port map"). MAME
+// keeps a read-back latch at F1 ("sound_dummy"); the board has nothing
+// there. The one program that reads it is Burning Rival's, whose driver
+// carries the code for an 8251 serial port (MIDI) at F0/F1 and polls its
+// status for transmit-ready, bit 0: FF passes as the latch's 37 does
+// (OPEN-QUESTIONS Q70, the port census of all 18 sets).
+// The YM3438s are read at A1/A0 = 0 only, by every set (Q70).
 //
 // Clocking: cen paces the Z80 (8.053975 MHz = 32.2159 MHz / 4). The ROM
 // is read through s32_zromcache, which stalls cen on a miss.
