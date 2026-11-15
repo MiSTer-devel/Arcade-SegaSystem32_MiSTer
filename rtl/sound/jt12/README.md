@@ -10,8 +10,10 @@ dependency tree, and jt10_adpcm_div.v (divider reused by
 jt12_pcm_interpol). The ADPCM blocks proper are not elaborated
 (use_adpcm=0).
 
-**Eleven files are modified (2026-11-13, each marked in its header, ports
-unchanged).** Every other file is the upstream commit's, byte for byte.
+**Thirteen files are modified (2026-11-13 and 11-14, each marked in its
+header; ports unchanged but for one input added to `jt12_eg_pure.v` and
+`jt12_eg_comb.v`, 2026-11-14).** Every other file is the upstream
+commit's, byte for byte.
 
 - `jt12_acc.v`: the upstream accumulator added every carrier of all six
   channels in one 12-bit sum. The YM3438 adds each channel's carriers in
@@ -27,7 +29,15 @@ unchanged).** Every other file is the upstream commit's, byte for byte.
   `sim/jt12_egfinal`; Q70).
 - `jt12_lfo.v`, the divider: the chip advances its LFO every 108 / 77 /
   71 / 67 / 62 / 44 / 8 / 5 samples, the upstream file one sample more
-  (bench `sim/jt12_lfo`; Q70).
+  (bench `sim/jt12_lfo`; Q70). Since 2026-11-14 the divider also leaves
+  reset at 1, which puts the LFO's steps one sample earlier against the
+  envelope timer, where the die-traced model has them.
+- `jt12_top.v` (2026-11-14), the LFO value the phase generator reads:
+  the chip latches the LFO's PM and AM values once a sample for every
+  slot; upstream both units read the live value, which suits the
+  envelope (tremolo) but puts vibrato a sample off for part of the slots.
+  The phase generator now reads a copy taken 22 cycles after `zero`
+  (`tools/fm/fm_lfo_probe.py`; Q70).
 - `jt12_eg.v`, one signal: when the key goes off while SSG-EG has an
   operator's output inverted, the chip takes the inverted value as the
   level the release starts from. The upstream file dropped the inversion
@@ -38,7 +48,9 @@ unchanged).** Every other file is the upstream commit's, byte for byte.
   only. The upstream file had one latch for both and took A8-AA from
   either bank. And the mode registers (21-2C) take their data only when
   address and data are both written on bank 0 (`tools/fm/
-  fm_latch_probe.py`; Q70).
+  fm_latch_probe.py`; Q70). And (2026-11-14) a 2A write leaves the DAC
+  value's bit 0 alone, which only test register 2C bit 3 sets; the
+  upstream file set it to 1 (`tools/fm/fm_dac_probe.py`; Q70).
 - `jt12_kon.v` and `jt12_mod.v`: on the chip operator 1 takes a key-on
   one sample after the other three operators of the same write. The
   upstream files keyed all four on together and made up for it on some
@@ -69,6 +81,21 @@ unchanged).** Every other file is the upstream commit's, byte for byte.
   take the doubled step are the chip's (its timer's low bits 0; 0 or 2;
   0, 1 or 2), where the upstream file had the same number of them on
   the other ticks (`tools/fm/fm_eghi_probe.py`; Q70).
+- `jt12_eg_pure.v`, `jt12_eg_comb.v` and `jt12_eg.v` (2026-11-14):
+  attack rates 62 and 63 zero the level only in the pass in which an
+  attack begins (a key-on, or an SSG-EG repeat while the key is held).
+  Written into an attack already under way they leave the level where
+  it is until the key-off or a lower rate. The upstream file zeroed the
+  level in every attack pass at those rates. `jt12_eg.v` makes the new
+  signal (`fresh_I`) and `jt12_eg_comb.v` passes it on (bench
+  `sim/jt12_egpure`; `tools/fm/fm_ar62_probe.py`; Q70).
+- `jt12_eg.v` (2026-11-14), the envelope-off rule: outside an attack,
+  unless an attack begins in the pass or SSG-EG holds the level up (key
+  down in mode B or D), a level at 200h or beyond under SSG-EG, or at
+  3F0h or beyond without it, goes to release at 3FFh at once. Upstream
+  held SSG-EG's hold-at-the-bottom modes 9 and F at about -48 dB for as
+  long as the key was down, and released SSG-EG notes from there at
+  four levels a step (`tools/fm/fm_ssg_probe.py`; Q70).
 
 Upstream was checked on 2026-11-13 at `eebba1d` (2026-11-09, 17 commits
 on). For a YM3438 two of them change behaviour. `a91e893` reworks CSM

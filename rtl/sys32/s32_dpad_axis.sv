@@ -21,6 +21,14 @@
 // hardware: the real controls are potentiometers the MSM6253 converts
 // continuously.
 //
+// `centre` (2026-11-14): while it is high the position is $80 at once and
+// the buttons are ignored. S32.sv raises it while the player's analog
+// stick has the axis (out of its dead zone). MiSTer also turns a left
+// stick's deflection into d-pad bits, so without it a stick held over
+// wound this position to full lock, and when the stick came back to
+// centre the control jumped there and took ~0.17 s to return (a user's
+// report: Rad Mobile's steering did not recentre with the stick).
+//
 // Cost: an 8-bit register, its step adder and four compares.
 
 module s32_dpad_axis (
@@ -29,13 +37,14 @@ module s32_dpad_axis (
     input  logic       tick,
     input  logic       plus,
     input  logic       minus,
+    input  logic       centre,  // the stick has the axis: hold $80
     output logic [7:0] pos      // offset binary, $80 = centre
 );
 
     initial pos = 8'h80;
 
     always_ff @(posedge clk) begin
-        if (rst)
+        if (rst || centre)
             pos <= 8'h80;
         else if (tick) begin
             if (plus & ~minus)

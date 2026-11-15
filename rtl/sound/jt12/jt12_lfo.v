@@ -47,6 +47,18 @@
 	  - Against: the YM3438 application manual's LFO table (3.98 ... 72.2
 	    Hz), which is the 109 ... 6 the original file had.
 	Bench: sim/jt12_lfo. docs/OPEN-QUESTIONS.md Q70.
+
+	Modified 2026-11-14: the divider leaves reset at 1, not 0, so its
+	phase against the envelope timer and the register writes is the
+	chip's (one sample ahead of what the original reset gave). Measured,
+	not read from the die's netlist: against Nuked-OPN2 with the two
+	models' writes aligned by the envelope (every envelope-only probe
+	equal), the LFO stepped one sample later here, and every LFO probe
+	(tools/fm/fm_lfo_probe.py, fm_misc_probe.py's lfotest and vibrato)
+	is equal to it with this reset value and jt12_top.v's phase-generator
+	copy, but for one sample at a write that stops the LFO and the known
+	key-on pass-order samples (OPEN-QUESTIONS Q70). It only sets where the divider stands after
+	reset; the step period is unchanged.
 	*/
 
 
@@ -123,11 +135,12 @@ always @(*)
 // it counts once a sample. It reaches `limit` in the counting cycle and is
 // cleared in the next one, so a step takes `limit` samples. The step
 // counter is held at 0 while the LFO is disabled; the divider runs on.
+// It leaves reset at 1 (2026-11-14, see the header).
 wire hit = (cnt & limit) == limit;
 
 always @(posedge clk)
 	if( rst )
-		{ lfo_mod, cnt } <= 14'd0;
+		{ lfo_mod, cnt } <= 14'd1;	// Modified 2026-11-14: cnt from 1 (see the header)
 	else begin
 		if( clk_en ) begin
 			if( hit ) begin

@@ -38,10 +38,25 @@
 	MAME ymfm clock_envelope, (~attenuation * increment) >> 4.
 	Bench: sim/jt12_egpure.
 
+	Also modified 2026-11-14: rates 62 and 63 zero the level only in the
+	pass in which an attack begins (the new input fresh: a key-on, or an
+	SSG-EG repeat while the key is held; jt12_eg.v makes it). In any other
+	attack pass those rates leave the level where it is, so an attack rate
+	raised to 62 or 63 while an attack is running stops the attack until
+	the key-off or a lower rate. The original file zeroed the level in
+	every attack pass at those rates. This adds one input port.
+	References: Nuked-OPN2 OPN2_EnvelopeADSR (kon_event: "Instant attack",
+	if (eg_ratemax) nextlevel = 0; attack state: a step only with
+	!eg_ratemax); MAME ymfm fm_operator::start_attack (rate >= 62: zero)
+	and clock_envelope ("attack rates of 62/63 don't increment if changed
+	after the initial key on"). Bench: sim/jt12_egpure; probe
+	tools/fm/fm_ar62_probe.py. docs/OPEN-QUESTIONS.md Q70.
+
 	*/
 
 module jt12_eg_pure(
 	input			attack,
+	input			fresh,	// Modified 2026-11-14: an attack begins this pass
 	input			step,
 	input [ 5:1]	rate,
 	input [ 9:0]	eg_in,
@@ -99,7 +114,9 @@ always @(*) begin
 			eg_pre_fastar = dr_result[10] ? 10'h3FF : dr_result[9:0];
 	end
 	else eg_pre_fastar = eg_in;
-	eg_pure = (attack&rate[5:1]==5'h1F) ? 10'd0 : eg_pre_fastar;
+	// Modified 2026-11-14 (see the header): zero at once only as the attack
+	// begins; at those rates a running attack does not move
+	eg_pure = (attack&rate[5:1]==5'h1F) ? ( fresh ? 10'd0 : eg_in ) : eg_pre_fastar;
 end
 
 endmodule // jt12_eg_pure

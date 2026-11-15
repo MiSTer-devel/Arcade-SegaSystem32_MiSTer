@@ -19,53 +19,53 @@ it is the first FPGA implementation of that CPU.
 
 ## Supported games
 
-| MRA | MAME set | Status |
-| --- | --- | --- |
-| `Golden Axe - The Revenge of Death Adder.mra` | `ga2` | tested on hardware |
-| `Golden Axe - The Revenge of Death Adder (US).mra` | `ga2u` | tested on hardware |
-| `Golden Axe - The Revenge of Death Adder (Japan).mra` | `ga2j` | tested on hardware |
-| `Spider-Man - The Videogame.mra` | `spidman` | tested on hardware |
-| `Spider-Man - The Videogame (US).mra` | `spidmanu` | tested on hardware |
-| `Spider-Man - The Videogame (Japan).mra` | `spidmanj` | tested on hardware |
-| `Holosseum.mra` | `holo` | tested on hardware |
-| `Super Visual Football - European Sega Cup.mra` | `svf` | tested on hardware |
-| `Super Visual Football - European Sega Cup (Original).mra` | `svfo` | tested on hardware |
-| `Super Visual Soccer - Sega Cup (US).mra` | `svs` | tested on hardware |
-| `Arabian Fight.mra` | `arabfgt` | tested on hardware |
-| `Arabian Fight (US).mra` | `arabfgtu` | tested on hardware |
-| `Arabian Fight (Japan).mra` | `arabfgtj` | tested on hardware |
-| `Burning Rival.mra` | `brival` | tested on hardware |
-| `Burning Rival (Japan).mra` | `brivalj` | tested on hardware |
-| `Dark Edge.mra` | `darkedge` | tested on hardware |
-| `Dark Edge (Japan).mra` | `darkedgej` | tested on hardware |
-| `SegaSonic The Hedgehog.mra` | `sonic` | tested on hardware |
-| `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` | tested on hardware |
-| `Rad Mobile.mra` | `radm` | tested on hardware |
-| `Rad Mobile (US).mra` | `radmu` | tested on hardware |
-| `Slip Stream.mra` | `slipstrm` | tested on hardware |
-| `Slip Stream (Hispanic).mra` | `slipstrmh` | tested on hardware |
-| `Alien3 - The Gun.mra` | `alien3` | tested on hardware |
-| `Alien3 - The Gun (US).mra` | `alien3u` | tested on hardware |
-| `Alien3 - The Gun (Japan).mra` | `alien3j` | tested on hardware |
-| `Rad Rally.mra` | `radr` | tested on hardware |
-| `Rad Rally (US).mra` | `radru` | tested on hardware |
-| `Rad Rally (Japan).mra` | `radrj` | tested on hardware |
-| `F1 Super Lap.mra` | `f1lap` | tested on hardware |
-| `F1 Super Lap (Unprotected).mra` | `f1lapt` | tested on hardware |
-| `F1 Super Lap (Japan).mra` | `f1lapj` | tested on hardware |
-| `Dragon Ball Z - V.R. V.S..mra` | `dbzvrvs` | tested on hardware |
-| `Jurassic Park.mra` | `jpark` | tested on hardware |
-| `Jurassic Park (Japan).mra` | `jparkj` | tested on hardware |
-| `Jurassic Park (Japan, Original).mra` | `jparkja` | tested on hardware |
-| `Jurassic Park (Japan, Conversion).mra` | `jparkjc` | tested on hardware |
-| `The J.League 1994.mra` | `jleague` | tested on hardware |
-| `The J.League 1994 (Original).mra` | `jleagueo` | tested on hardware |
-| `F1 Exhaust Note.mra` | `f1en` | tested on hardware |
-| `F1 Exhaust Note (US).mra` | `f1enu` | tested on hardware |
-| `F1 Exhaust Note (Japan).mra` | `f1enj` | tested on hardware |
-| `Air Rescue.mra` | `arescue` | tested on hardware |
-| `Air Rescue (US).mra` | `arescueu` | tested on hardware |
-| `Air Rescue (Japan).mra` | `arescuej` | tested on hardware |
+| MRA | MAME set |
+| --- | --- |
+| `Golden Axe - The Revenge of Death Adder.mra` | `ga2` |
+| `Golden Axe - The Revenge of Death Adder (US).mra` | `ga2u` |
+| `Golden Axe - The Revenge of Death Adder (Japan).mra` | `ga2j` |
+| `Spider-Man - The Videogame.mra` | `spidman` |
+| `Spider-Man - The Videogame (US).mra` | `spidmanu` |
+| `Spider-Man - The Videogame (Japan).mra` | `spidmanj` |
+| `Holosseum.mra` | `holo` |
+| `Super Visual Football - European Sega Cup.mra` | `svf` |
+| `Super Visual Football - European Sega Cup (Original).mra` | `svfo` |
+| `Super Visual Soccer - Sega Cup (US).mra` | `svs` |
+| `Arabian Fight.mra` | `arabfgt` |
+| `Arabian Fight (US).mra` | `arabfgtu` |
+| `Arabian Fight (Japan).mra` | `arabfgtj` |
+| `Burning Rival.mra` | `brival` |
+| `Burning Rival (Japan).mra` | `brivalj` |
+| `Dark Edge.mra` | `darkedge` |
+| `Dark Edge (Japan).mra` | `darkedgej` |
+| `SegaSonic The Hedgehog.mra` | `sonic` |
+| `SegaSonic The Hedgehog (Prototype).mra` | `sonicp` |
+| `Rad Mobile.mra` | `radm` |
+| `Rad Mobile (US).mra` | `radmu` |
+| `Slip Stream.mra` | `slipstrm` |
+| `Slip Stream (Hispanic).mra` | `slipstrmh` |
+| `Alien3 - The Gun.mra` | `alien3` |
+| `Alien3 - The Gun (US).mra` | `alien3u` |
+| `Alien3 - The Gun (Japan).mra` | `alien3j` |
+| `Rad Rally.mra` | `radr` |
+| `Rad Rally (US).mra` | `radru` |
+| `Rad Rally (Japan).mra` | `radrj` |
+| `F1 Super Lap.mra` | `f1lap` |
+| `F1 Super Lap (Unprotected).mra` | `f1lapt` |
+| `F1 Super Lap (Japan).mra` | `f1lapj` |
+| `Dragon Ball Z - V.R. V.S..mra` | `dbzvrvs` |
+| `Jurassic Park.mra` | `jpark` |
+| `Jurassic Park (Japan).mra` | `jparkj` |
+| `Jurassic Park (Japan, Original).mra` | `jparkja` |
+| `Jurassic Park (Japan, Conversion).mra` | `jparkjc` |
+| `The J.League 1994.mra` | `jleague` |
+| `The J.League 1994 (Original).mra` | `jleagueo` |
+| `F1 Exhaust Note.mra` | `f1en` |
+| `F1 Exhaust Note (US).mra` | `f1enu` |
+| `F1 Exhaust Note (Japan).mra` | `f1enj` |
+| `Air Rescue.mra` | `arescue` |
+| `Air Rescue (US).mra` | `arescueu` |
+| `Air Rescue (Japan).mra` | `arescuej` |
 
 The regional and revision sets differ from their parent only in the program
 ROMs (Super Visual Soccer also has its own sound program; the SegaSonic
@@ -152,7 +152,11 @@ default.
 **SegaSonic** is played with a trackball and one button, Spin Jump (the
 game's own name for it). Player 1's ball is the mouse, or the left analog
 stick of pad 1; players 2 and 3 use the left analog sticks of pads 2 and 3.
-The ball counts every step as it arrives, as the real board's counters do.
+Each player's D-pad also rolls the ball (at MAME's speed for a digital
+control, while the stick rests), and MiSTer spinners 1-3 roll players 1-3's
+ball left and right, so a trackball or spinner that MiSTer reports as a
+spinner works too. The ball counts every step as it arrives, as the real
+board's counters do.
 Spin Jump is A, Start is Start and Coin is Select; player 3's coin and start
 are pad 3's. Service and Test have no default.
 
@@ -164,6 +168,10 @@ B or the stick pulled down. A USB steering wheel works too: MiSTer sends its
 wheel as the left stick, its accelerator pedal as the left stick pushed up
 and its brake pedal as the right stick pushed up, and the core reads all
 three. A stick or a pedal moved all the way is the pedal pressed fully.
+The wheel the board reads turns no faster than a cabinet's wheel can,
+about 0.17 s from the centre to full lock, whichever control steers. The
+game ignores a wheel reading that jumps too far from the last one, so a
+stick let go from full lock used to leave the car turning.
 The cabinet's two buttons, Light and Wiper, are X and Y. Start is Start and
 Coin is Select; Service and Test have no default. A game costs two credits.
 
@@ -301,6 +309,15 @@ In the 320-pixel mode the picture is 400 × 262 dots at a 6.25 MHz pixel
 clock, 59.64 Hz. Burning Rival uses the board's 416-pixel mode: 512 × 262
 dots at 8.053975 MHz, 60.04 Hz. SegaSonic shows its opening screens in that
 mode and switches to 320 pixels for the game.
+
+Every switch between the two widths changes the picture's width, line rate
+and frame rate, as on the board. Slip Stream and Rad Rally switch many times
+while they are played, between their menus and their races. With
+`vsync_adjust=1` or `2` (or `vscale_mode=4` or `5`) in `MiSTer.ini`, the
+MiSTer menu sets a new HDMI mode at each change, so the display re-syncs
+and can go blank for a moment. Direct Video sends the core's own timing, so
+there the display always re-syncs at a switch. With `vsync_adjust=0` and
+the scaler, the HDMI output does not change.
 
 ## Accuracy
 

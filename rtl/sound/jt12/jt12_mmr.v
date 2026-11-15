@@ -56,6 +56,16 @@
     2026-08-30) and MAME's ymfm drop every data write whose bank differs
     from the address's, the FM registers' too; the die-traced model does
     not, and that is what is followed here.
+
+    Also modified 2026-11-14: the DAC value's lowest bit (REG_PCM below).
+    The DAC value is nine bits: a write to 2A sets the upper eight (bit 7
+    inverted) and leaves bit 0 alone, which only test register 2C bit 3
+    sets (0 from reset). The original file set bit 0 to 1 at every 2A
+    write, one code of 512 above the chip's.
+    Reference: Nuked-OPN2 OPN2_DoIO, case 0x2a: dacdata &= 0x01; dacdata
+    |= (write_data ^ 0x80) << 1; case 0x2c: dacdata &= 0x1fe; dacdata |=
+    mode_test_2c[3]. Found by the 2026-11-13 independent review. Check:
+    tools/fm/fm_dac_probe.py (docs/OPEN-QUESTIONS.md Q70).
     */
 
 
@@ -383,7 +393,8 @@ always @(posedge clk) begin : memory_mapped_registers
                     casez( selected_register)
                         REG_DACTEST: pcm[0] <= din[3];
                         REG_PCM:
-                            pcm <= { ~din[7], din[6:0], 1'b1 };
+                            // Modified 2026-11-14 (see the header): bit 0 kept
+                            pcm <= { ~din[7], din[6:0], pcm[0] };
                         REG_PCM_EN:  pcm_en  <= din[7];
                         default:;
                     endcase

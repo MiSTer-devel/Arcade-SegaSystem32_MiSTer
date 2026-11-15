@@ -22,6 +22,36 @@ http://gendev.spritesmind.net/forum/viewtopic.php?t=386&postdays=0&postorder=asc
 
     Based on jt51_phasegen.v, from JT51
 
+    Modified 2026-11-14 for the Sega System 32 core (RetroShrimp): the LFO
+    value the phase generator (vibrato) reads, lfo_mod_pg below. The ports
+    are the original ones.
+
+    On the chip the LFO's PM and AM values are latched once a sample, in
+    cycle 0, and every slot of that sample uses them (Nuked-OPN2 ym3438.c,
+    traced from the YM3438 die: OPN2_Clock, case 0 latches lfo_pm and
+    lfo_am; OPN2_PhaseCalcIncrement and OPN2_EnvelopeGenerate read them).
+    Here both units read lfo_mod live, which steps one cycle after `zero`.
+    That is right for the envelope (tremolo), whose 24 slots of a sample
+    all fall within the one value the chip's latch holds, but the phase
+    generator reads its slots at a different place in the frame, so
+    vibrato steps a sample apart from tremolo, and from the chip, for part
+    of the slots. lfo_mod_pg holds a copy taken 22 cycles after `zero`,
+    which puts the step where the chip has it for every slot.
+
+    Evidence: tools/fm/fm_lfo_probe.py (six channels, each carrier on a
+    different operator, AM and PM on together, the LFO stepped, re-rated,
+    stopped and restarted) against Nuked-OPN2 with the two models' writes
+    aligned by the envelope, and with jt12_lfo.v's reset value: 1 of
+    608,400 channel-samples differs with the copy taken 21, 22 or 23
+    cycles after `zero` (on the write that stops the LFO; it moves with
+    the write's cycle), and 2,993 or more with any other position from 1
+    to 24. The original file (live value, divider from 0) leaves 52,782.
+    fm_misc_probe.py's lfotest (tremolo and vibrato on two chips) is equal
+    in every sample, and its vibrato notes are as before (only the known
+    key-on pass-order samples differ). An AM copy at any fixed cycle is
+    no better than the live value.
+    docs/OPEN-QUESTIONS.md Q70.
+
     */
 
 module jt12_top (
@@ -145,6 +175,11 @@ wire            rst_int;
 // LFO
 wire    [6:0]   lfo_mod;
 wire            lfo_rst;
+// Modified 2026-11-14 (see the header): the phase generator's copy of the
+// LFO value, taken 22 cycles after `zero`, as the chip's cycle-0 latch is
+// for the slots in the order the phase generator reads them.
+reg     [6:0]   lfo_mod_pg;
+reg     [4:0]   lfo_pg_cnt;
 // PSG
 wire    [3:0]   psg_addr;
 wire    [7:0]   psg_data, psg_dout;
@@ -451,6 +486,17 @@ end else begin : gen_nolfo
 end
 endgenerate
 
+// Modified 2026-11-14 (see the header). lfo_pg_cnt is 1 in the cycle after
+// `zero`; the copy is taken on its count of 22.
+always @(posedge clk)
+    if( rst ) begin
+        lfo_mod_pg <= 7'd0;
+        lfo_pg_cnt <= 5'd0;
+    end else if( clk_en ) begin
+        if( lfo_pg_cnt == 5'd22 ) lfo_mod_pg <= lfo_mod;
+        lfo_pg_cnt <= zero ? 5'd1 : lfo_pg_cnt + 5'd1;
+    end
+
 // YM2203/YM2610 have a PSG
 
 `ifndef NOSSG
@@ -519,7 +565,7 @@ jt12_pg #(.num_ch(num_ch)) u_pg(
     // Operator detuning
     .dt1_I      ( dt1_I         ), // same as JT51's DT1
     // Phase modulation by LFO
-    .lfo_mod    ( lfo_mod       ),
+    .lfo_mod    ( lfo_mod_pg    ),  // Modified 2026-11-14 (see the header)
     .pms_I      ( pms_I         ),
     // phase operation
     .pg_rst_II  ( pg_rst_II     ),

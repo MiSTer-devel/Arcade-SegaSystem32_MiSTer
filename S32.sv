@@ -116,6 +116,7 @@ wire  [31:0] joystick_0, joystick_1, joystick_2, joystick_3;
 wire  [15:0] stick_0, stick_1, stick_2;   // left analog: [7:0] X, [15:8] Y
 wire  [15:0] rstick_0;                    // pad 1 right analog (Air Rescue)
 wire  [24:0] ps2_mouse;                   // [24] toggles per packet
+wire   [8:0] spinner_0, spinner_1, spinner_2; // [7:0] signed delta, [8] toggles per update
 assign crt_enable = status[35] & ~forced_scandoubler;
 
 wire        ioctl_download;
@@ -160,6 +161,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_l_analog_1(stick_1),
 	.joystick_l_analog_2(stick_2),
 	.joystick_r_analog_0(rstick_0),
+	.spinner_0(spinner_0),
+	.spinner_1(spinner_1),
+	.spinner_2(spinner_2),
 	.ps2_mouse(ps2_mouse)
 );
 
@@ -691,11 +695,18 @@ wire [2:0] in_service34 = {1'b1,
 // steps as they arrive, never once a frame (docs/sonic-bringup.md §3):
 //   - P1: the PS/2 mouse, one count per mouse count (MAME's sensitivity
 //     100), and the left analog stick of pad 1;
-//   - P2 / P3: the left analog sticks of pads 2 / 3.
+//   - P2 / P3: the left analog sticks of pads 2 / 3;
+//   - P1 / P2 / P3: the d-pads of pads 1 / 2 / 3, and MiSTer's spinners
+//     0 / 1 / 2 (a spinner turns the ball left/right, one count per
+//     spinner count; 2026-11-14, a user's report of no movement).
 // A stick is a rate: every 2^15 clk_sys (~1.97 kHz) its signed deflection
 // is added to an accumulator and whole 1/128ths are emitted, so a full
-// deflection rolls ~1,950 counts a second (MAME's keyboard speed is 30 a
-// frame, 1,800 a second); |deflection| < 8 is a dead zone.
+// deflection rolls ~1,950 counts a second; |deflection| < 8 is a dead zone.
+// A held d-pad direction counts as a deflection of 117, ~1,797 counts a
+// second, which is MAME's digital speed (PORT_KEYDELTA(30): 30 counts a
+// frame at 59.9 Hz). It moves an axis only while that axis of the stick
+// rests in the dead zone, so a pad whose stick also drives the d-pad bits
+// does not count twice.
 // Directions follow MAME's ports: the X counter runs DOWN as the ball rolls
 // right (PORT_REVERSE on TRACKX), the Y counter up as it rolls toward the
 // player (screen down). PS/2 Y is positive up, MiSTer stick Y positive down.
@@ -706,6 +717,11 @@ wire trk_tick = &trk_tick_cnt;
 
 function automatic [7:0] stick_dz (input [7:0] v);
 	stick_dz = ($signed(v) > 8'sd7 || $signed(v) < -8'sd7) ? v : 8'd0;
+endfunction
+// the d-pad as a deflection: +117 for plus, -117 for minus, 0 for neither
+// or both
+function automatic [8:0] dpad_dfl (input plus, input minus);
+	dpad_dfl = (plus & ~minus) ? 9'sd117 : (minus & ~plus) ? -9'sd117 : 9'sd0;
 endfunction
 
 reg  [12:0] trk_acc [0:5];                     // {P1x,P1y,P2x,P2y,P3x,P3y}
@@ -719,25 +735,44 @@ wire [15:0] trk_stick [0:2];
 assign trk_stick[0] = stick_0;
 assign trk_stick[1] = stick_1;
 assign trk_stick[2] = stick_2;
+wire  [3:0] trk_dpad [0:2];                    // {up, down, left, right}
+assign trk_dpad[0] = joystick_0[3:0];
+assign trk_dpad[1] = joystick_1[3:0];
+assign trk_dpad[2] = joystick_2[3:0];
+reg   [2:0] spin_tg = 0;
+wire  [2:0] spin_ev = {spinner_2[8], spinner_1[8], spinner_0[8]} ^ spin_tg;
+wire  [7:0] trk_spin [0:2];
+assign trk_spin[0] = spinner_0[7:0];
+assign trk_spin[1] = spinner_1[7:0];
+assign trk_spin[2] = spinner_2[7:0];
 always @(posedge clk_sys) begin
 	mouse_tg <= ps2_mouse[24];
+	spin_tg  <= {spinner_2[8], spinner_1[8], spinner_0[8]};
 	trk_stb <= 3'd0;
 	for (int n = 0; n < 6; n++) begin
 		logic [12:0] sum;
-		logic [7:0]  dfl;
+		logic [7:0]  sdz;
+		logic [8:0]  dfl;
 		logic [11:0] st;
-		// X from bits 7:0 (reversed), Y from bits 15:8
-		dfl = stick_dz(n[0] ? trk_stick[n/2][15:8] : trk_stick[n/2][7:0]);
-		sum = trk_acc[n] + (n[0] ? {{5{dfl[7]}}, dfl} : -{{5{dfl[7]}}, dfl});
+		// X from bits 7:0 (reversed), Y from bits 15:8; the d-pad while
+		// the stick axis rests (X: right +, Y: down +, as the stick)
+		sdz = stick_dz(n[0] ? trk_stick[n/2][15:8] : trk_stick[n/2][7:0]);
+		dfl = (sdz != 8'd0) ? {sdz[7], sdz}
+		    : n[0] ? dpad_dfl(trk_dpad[n/2][2], trk_dpad[n/2][3])
+		           : dpad_dfl(trk_dpad[n/2][0], trk_dpad[n/2][1]);
+		sum = trk_acc[n] + (n[0] ? {{4{dfl[8]}}, dfl} : -{{4{dfl[8]}}, dfl});
 		st  = trk_tick ? {{6{sum[12]}}, sum[12:7]} : 12'd0;
 		if (trk_tick) trk_acc[n] <= sum - {st[5:0], 7'd0};
 		// the mouse adds to P1 only
 		if (n < 2 && mouse_ev)
 			st = st + (n == 0 ? -{{3{mouse_dx[8]}}, mouse_dx}
 			                  : -{{3{mouse_dy[8]}}, mouse_dy});
+		// a spinner turns its player's ball left/right (X reversed)
+		if (!n[0] && spin_ev[n/2])
+			st = st - {{4{trk_spin[n/2][7]}}, trk_spin[n/2]};
 		trk_step[n] <= st;
 	end
-	trk_stb <= {3{trk_tick}} | {2'b00, mouse_ev};
+	trk_stb <= {3{trk_tick}} | {2'b00, mouse_ev} | spin_ev;
 	if (rst_core) for (int n = 0; n < 6; n++) trk_acc[n] <= 13'd0;
 end
 
@@ -750,6 +785,15 @@ end
 //     Inside the stick's dead zone the d-pad steers instead: held, the wheel
 //     turns 3 counts per 2^18 clk_sys (~250 Hz, ~0.17 s to full lock);
 //     released, it returns to centre at the same rate (s32_dpad_axis).
+//     While the stick steers, the d-pad wheel is held at centre, so the
+//     wheel is centred the moment the stick returns (2026-11-14: MiSTer
+//     also sets the d-pad bits from the stick, which had wound it to full
+//     lock behind the stick's back).
+//     Either way the value the A/D board converts follows the control by
+//     at most 3 counts per 2^18 clk_sys (s32_wheel_slew), as fast as the
+//     d-pad turns it: Rad Mobile drops any reading more than $40 from the
+//     last one it took, so a thumbstick let go from full lock left the car
+//     at full lock (2026-11-14 user report, docs/radm-bringup.md §3).
 //   - accelerator: pad 1 button 1 (full), or the left stick pushed up;
 //     brake: button 2 (full), or the left stick pulled down, or the right
 //     stick pushed up, which is where MiSTer puts a wheel's brake pedal
@@ -765,9 +809,17 @@ s32_dpad_axis wheel_axis
 (
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
 	.plus(joystick_0[0]), .minus(joystick_0[1]),   // right / left
+	.centre(wheel_x != 8'd0),                      // the stick steers
 	.pos(wheel_dig)
 );
-wire [7:0] adc_wheel = (wheel_x != 8'd0) ? (wheel_x ^ 8'h80) : wheel_dig;
+wire [7:0] wheel_ctl = (wheel_x != 8'd0) ? (wheel_x ^ 8'h80) : wheel_dig;
+wire [7:0] adc_wheel;
+s32_wheel_slew wheel_slew
+(
+	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
+	.target(wheel_ctl),
+	.pos(adc_wheel)
+);
 wire [7:0] adc_accel, adc_brake;
 s32_pedals pedals
 (
@@ -831,12 +883,14 @@ s32_dpad_axis ar_axis_x
 (
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
 	.plus(joystick_0[0]), .minus(joystick_0[1]),   // right / left
+	.centre(stick_dz(stick_0[7:0]) != 8'd0),       // the stick has X
 	.pos(ar_dig_x)
 );
 s32_dpad_axis ar_axis_y
 (
 	.clk(clk_sys), .rst(rst_core), .tick(adc_tick),
 	.plus(joystick_0[2]), .minus(joystick_0[3]),   // down / up
+	.centre(stick_dz(stick_0[15:8]) != 8'd0),      // the stick has Y
 	.pos(ar_dig_y)
 );
 // an axis follows the d-pad only while its stick axis rests, so the stick

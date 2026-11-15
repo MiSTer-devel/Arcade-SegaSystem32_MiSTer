@@ -17,6 +17,10 @@
     Version: 1.0
     Date: 30-10-2018
 
+    Modified 2026-11-14 for the Sega System 32 core (RetroShrimp): one
+    input more, pure_fresh, passed to jt12_eg_pure's new fresh input (an
+    attack begins in this pass; see that file's header).
+
     */
 
 module jt12_eg_comb(
@@ -55,6 +59,7 @@ module jt12_eg_comb(
     ///////////////////////////////////
     // III
     input           pure_attack,
+    input           pure_fresh,     // Modified 2026-11-14 (see the header)
     input           pure_step,
     input [ 5:1]    pure_rate,
     input           pure_ssg_en,
@@ -116,6 +121,7 @@ jt12_eg_step u_step(
 wire [9:0] egin, egout;
 jt12_eg_pure u_pure(
     .attack ( pure_attack   ),
+    .fresh  ( pure_fresh    ),
     .step   ( pure_step     ),
     .rate   ( pure_rate     ),
     .ssg_en ( pure_ssg_en   ),

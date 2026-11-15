@@ -39,6 +39,41 @@
         starting point".
     Check: tools/fm/fm_ssg_probe.py (docs/OPEN-QUESTIONS.md Q70).
 
+    Also modified 2026-11-14: fresh_I and its two pipeline copies, which
+    tell jt12_eg_pure that an attack begins in this pass, the only pass in
+    which rates 62 and 63 zero the level (that file's header has the rule).
+    An attack begins at a key-on and, while the key is held, in every pass
+    in which SSG-EG is on without hold and the level has bit 9 set: the
+    die's kon_event = (nkon && !okon) || (okon && eg_ssg_repeat_latch),
+    with the repeat latch set from (eg_level & 0x200) && !(ssg_eg & 1) in
+    any envelope state (Nuked-OPN2 OPN2_EnvelopeSSGEG and
+    OPN2_EnvelopeADSR). In decay that is the SSG-EG restart jt12_eg_ctrl
+    already makes; in an attack that starts from above 200h it matters
+    only at rates 62 and 63. MAME's ymfm differs in that last case
+    (start_attack returns at once in an attack); the die trace is followed.
+
+    Also modified 2026-11-14: the envelope-off rule, off_I and its two
+    pipeline copies. Outside an attack, unless an attack begins in this
+    pass or SSG-EG's hold-up holds the level (the key down in mode B or
+    D), an envelope whose level is "off" goes to release at 3FFh at once.
+    Off is bit 9 under SSG-EG (the level at 200h or beyond) and the top
+    six bits all set without it (3F0h, about 90 dB down). The level tested
+    is the one the pass releases from (eg_koff_I). Under SSG-EG this is
+    audible: in the hold-at-the-bottom modes 9 and F the chip falls silent
+    where the original file held the level at 200h (about -48 dB) for as
+    long as the key was down, and a released note goes silent at 200h
+    where the original file carried on down at four levels a step.
+    Reference: Nuked-OPN2 ym3438.c (traced from the YM3438 die),
+    OPN2_EnvelopeADSR: eg_off = ssg_enable ? level >> 9 : (level & 0x3f0)
+    == 0x3f0; "Envelope off": if (!kon_event && !eg_ssg_hold_up_latch &&
+    eg_state != eg_num_attack && eg_off) { nextstate = eg_num_release;
+    nextlevel = 0x3ff; }, with the hold-up latch from OPN2_EnvelopeSSGEG
+    (eg_kon_latch && ((ssg_eg & 7) == 5 || (ssg_eg & 7) == 3)). The
+    forced release also clears the SSG-EG inversion, as the chip's does
+    for these modes (its eg_ssg_inv is 0 for 9 and F and after a key-off).
+    Check: tools/fm/fm_ssg_probe.py against Nuked-OPN2 (OPEN-QUESTIONS
+    Q70).
+
     */
 
 module jt12_eg (
@@ -109,6 +144,19 @@ reg  [9:0] eg_in_II, eg_in_III, eg_in_IV;
 wire [9:0] eg_koff_I = ( keyoff_now_I && ssg_inv_in_I ) ?
                        ( 10'h200 - eg_in_I ) : eg_in_I;
 
+// Modified 2026-11-14 (see the header): an attack begins in this pass
+wire fresh_I = state_next_I[0] & ( keyon_now_I |
+               ( keyon_last_I & keyon_I & ssg_en_I & eg_in_I[9] & ~ssg_eg_I[0] ) );
+reg  fresh_II, fresh_III;
+
+// Modified 2026-11-14 (see the header): the envelope-off rule
+wire eg_off_I   = ssg_en_I ? eg_koff_I[9] : &eg_koff_I[9:4];
+wire kon_ev_I   = keyon_now_I | ( keyon_last_I & ssg_en_I & eg_in_I[9] & ~ssg_eg_I[0] );
+wire hold_up_I  = keyon_I & ssg_en_I & ( ssg_eg_I==3'b101 || ssg_eg_I==3'b011 );
+wire off_I      = eg_off_I & ~kon_ev_I & ~hold_up_I & ~state_in_I[0];
+wire [2:0] state_eg_I = off_I ? 3'b000 : state_next_I;   // RELEASE
+reg  off_II, off_III;
+
 
 
 jt12_eg_comb u_comb(
@@ -149,6 +197,7 @@ jt12_eg_comb u_comb(
     ///////////////////////////////////
     // III
     .pure_attack    ( attack_III        ),
+    .pure_fresh     ( fresh_III         ),
     .pure_step      ( step_III          ),
     .pure_rate      ( rate_in_III[5:1]  ),
     .pure_ssg_en    ( ssg_en_III        ), 
@@ -168,14 +217,18 @@ jt12_eg_comb u_comb(
 
 always @(posedge clk) if(clk_en) begin
     eg_in_II    <= eg_koff_I;
-    attack_II   <= state_next_I[0];
+    attack_II   <= state_eg_I[0];
+    fresh_II    <= fresh_I;
+    off_II      <= off_I;
     base_rate_II<= base_rate_I;
     ssg_en_II   <= ssg_en_I;
-    ssg_inv_II  <= ssg_inv_out_I;
+    ssg_inv_II  <= ssg_inv_out_I & ~off_I;
     pg_rst_II   <= pg_rst_I;
 
     eg_in_III   <= eg_in_II;
     attack_III  <= attack_II;
+    fresh_III   <= fresh_II;
+    off_III     <= off_II;
     rate_in_III <= rate_out_II[5:1];
     ssg_en_III  <= ssg_en_II;
     ssg_inv_III <= ssg_inv_II;
@@ -183,7 +236,7 @@ always @(posedge clk) if(clk_en) begin
     sum_in_III  <= sum_out_II;
 
     ssg_inv_IV  <= ssg_inv_III;
-    eg_in_IV    <= pure_eg_out_III;
+    eg_in_IV    <= off_III ? 10'h3FF : pure_eg_out_III;
     eg_V        <= eg_out_IV;
 end
 
@@ -206,7 +259,7 @@ jt12_sh_rst #( .width(3), .stages(4*num_ch), .rstval(1'b1) ) u_egstate(
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .rst    ( rst       ),
-    .din    ( state_next_I  ),
+    .din    ( state_eg_I    ),   // Modified 2026-11-14 (see the header)
     .drop   ( state_in_I    )
 );
 
