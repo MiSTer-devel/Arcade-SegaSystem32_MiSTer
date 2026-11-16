@@ -10,7 +10,7 @@ dependency tree, and jt10_adpcm_div.v (divider reused by
 jt12_pcm_interpol). The ADPCM blocks proper are not elaborated
 (use_adpcm=0).
 
-**Thirteen files are modified (2026-11-13 and 11-14, each marked in its
+**Thirteen files are modified (2026-11-13 to 11-15, each marked in its
 header; ports unchanged but for one input added to `jt12_eg_pure.v` and
 `jt12_eg_comb.v`, 2026-11-14).** Every other file is the upstream
 commit's, byte for byte.
@@ -50,7 +50,11 @@ commit's, byte for byte.
   address and data are both written on bank 0 (`tools/fm/
   fm_latch_probe.py`; Q70). And (2026-11-14) a 2A write leaves the DAC
   value's bit 0 alone, which only test register 2C bit 3 sets; the
-  upstream file set it to 1 (`tools/fm/fm_dac_probe.py`; Q70).
+  upstream file set it to 1 (`tools/fm/fm_dac_probe.py`; Q70). And
+  (2026-11-15) the status busy bit: it shows from the second internal
+  cycle after a data write for exactly 32 cycles, and a data write while
+  it runs neither restarts nor extends it; the upstream file restarted
+  it at every write (`sim/jt12_busy`, against Nuked-OPN2; Q70).
 - `jt12_kon.v` and `jt12_mod.v`: on the chip operator 1 takes a key-on
   one sample after the other three operators of the same write. The
   upstream files keyed all four on together and made up for it on some

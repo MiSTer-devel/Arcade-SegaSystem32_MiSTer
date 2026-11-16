@@ -8,6 +8,10 @@
 //     INPUT_PORTS_START(radm) (ch0 wheel, ch1 accelerator, ch2 brake).
 //   MAME segas32.cpp ROM_START(radm) comment: "A/D BD NO. 837-7536".
 //   docs/radm-bringup.md §3; docs/OPEN-QUESTIONS.md Q51.
+//   Sega schematic 834-6510 I/O BD HOT ROD (1988): MSM6253RS pinout, S.O. on
+//     D7, A0/A1 written with /WR, ALE tied high (Q51). There A0/A1 come
+//     from the data bus; Rad Mobile writes $00 to every channel, so its
+//     837-7536 must take them from the address, as below.
 //
 // Bus view (MAME):
 //   write, any data, to word offset n  -> the shift register loads channel

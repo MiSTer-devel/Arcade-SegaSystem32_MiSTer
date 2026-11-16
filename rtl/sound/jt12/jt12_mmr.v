@@ -491,21 +491,42 @@ always @(posedge clk) begin : memory_mapped_registers
     end
 end
 
+// Modified 2026-11-15 for the Sega System 32 core (RetroShrimp): the busy
+// flag follows the die. A data write is seen at the next internal cycle
+// (bsy_wr, the die's write_d_en), which starts the 32-cycle count; the
+// status bit (busy) shows the count one cycle later; and a data write that
+// lands while the count runs neither restarts nor extends it. The count is
+// never cleared: it wraps to 0 on the cycle that ends the busy period.
+// The original file restarted the count at every data write and set the
+// status bit in the write's own clock, so back-to-back writes stretched
+// busy and it rose about two cycles early.
+// Reference: Nuked-OPN2 ym3438.c, OPN2_DoIO: busy = write_busy;
+// write_busy_cnt += write_busy; write_busy = (write_busy &&
+// !(write_busy_cnt >> 5)) || write_d_en; write_busy_cnt &= 0x1f.
+// Of the library only Slip Stream reads status bit 7 (its FM write routine
+// waits on it after every write); the other drivers poll the timer flags.
+// Check: sim/jt12_busy against the die-traced model
+// (docs/OPEN-QUESTIONS.md Q70). `write` must be one clock per data write
+// (s32_sound's wr_ev): a held level counts as a write every cycle.
 reg  [4:0] busy_cnt; // busy lasts for 32 synthesizer clock cycles
-wire [5:0] nx_busy = {1'd0,busy_cnt}+{5'd0,busy};
+reg        bsy_wr;   // a data write since the last internal cycle
+reg        bsy_run;  // the die's write_busy
+wire [5:0] nx_busy = {1'd0,busy_cnt}+{5'd0,bsy_run};
 
 always @(posedge clk, posedge rst) begin
     if( rst ) begin
         busy     <= 0;
         busy_cnt <= 0;
+        bsy_wr   <= 0;
+        bsy_run  <= 0;
     end else begin
-        if( write&addr[0] ) begin
-            busy     <= 1;
-            busy_cnt <= 0;
-        end else if(clk_en) begin
-            busy     <= ~nx_busy[5] & busy;
-            busy_cnt <=  nx_busy[4:0];
-        end
+        if( clk_en ) begin
+            busy     <= bsy_run;
+            busy_cnt <= nx_busy[4:0];
+            bsy_run  <= (bsy_run & ~nx_busy[5]) | bsy_wr;
+            bsy_wr   <= write & addr[0];
+        end else if( write&addr[0] )
+            bsy_wr   <= 1;
     end
 end
 

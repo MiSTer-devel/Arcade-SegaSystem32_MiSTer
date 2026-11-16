@@ -18,6 +18,11 @@
 // The erase sweep covers the buffer width x 224 at one pixel per cycle.
 // The real chip's erase and draw times are not documented; status reads 1
 // (normal), or 2 while the engine is still busy at the next trigger.
+// The engine starts walking the list a fixed 300 us after the trigger
+// (LIST_DELAY), alongside the sweep, and holds its first frame-buffer write
+// until the sweep ends (e_hold, OPEN-QUESTIONS Q59): s32tech saw a list
+// change made in the vblank-out interrupt used and one made after a short
+// delay loop missed, and reports the erase bit set only very briefly.
 //
 // Columns 320-415 (2026-10-30, docs/radr-scoping.md §6.3, OPEN-QUESTIONS
 // Q55): a 320-wide erase leaves them as they were, so a bank shown wide
@@ -43,7 +48,11 @@
 // banner's fade-in. Auto mode keeps its own policy below (skip one tick,
 // then the watchdog), which only ever triggers from W_IDLE.
 
-module s32_sprite_top (
+module s32_sprite_top #(
+    // clk cycles from a trigger to the engine's start (header, Q59):
+    // 300 us at the core's 64.4318 MHz clk (comment above e_hold)
+    parameter int LIST_DELAY = 19330
+) (
     input  logic        clk,
     input  logic        rst,
     input  logic        cen,          // engine/sequencer enable (freeze on 0)
@@ -117,7 +126,9 @@ module s32_sprite_top (
     logic        er_bank;              // bank the sweep is erasing
     logic [1:0]  wdirty;               // per bank: x 320-415 may be dirty
     logic        ovr_hold;             // one auto tick already skipped busy
-    logic        restart_pend;         // manual time-out: start after abort
+    logic        ls_pend;              // engine start waiting (LIST_DELAY)
+    logic [15:0] ld_cnt;               // clk cycles left of LIST_DELAY
+    logic        ld_load;              // a trigger acts this cycle
 
     assign render_busy = (wst != W_IDLE) || eng_busy;
 
@@ -127,8 +138,30 @@ module s32_sprite_top (
     logic [7:0]  e_y;
     logic [15:0] e_wdata;
     logic        e_shadow;
+    // List processing starts 300 us after the trigger, not after the erase
+    // (2026-11-15, OPEN-QUESTIONS Q59). s32tech 315-5386A note 1: a list
+    // entry changed in the vblank-out interrupt is used, the same change
+    // made after a short delay loop is not, so the chip reads the head of
+    // its list within a short time of vblank-out. Measured on s32_sys
+    // (+SPRHEADLOG): F1 Super Lap's vblank-out handler writes its sub-list
+    // jump 51-54 us after vblank-out (a board V60, slower than the core's,
+    // later still), and on alternate menu frames its main loop rewrites
+    // the shared clip at entry 0 on line 35 (MAME's pace: line 18), which
+    // MAME and the board do not take that frame. MAME's 50 us lands before
+    // the core's jump write; the old read after the 45-line sweep lands
+    // after the clip write. 300 us sits between the two with about 4x
+    // margin each side; the exact time is Q59's open question. (Golden
+    // Axe writes its jump at line 225, in vblank.) The engine then runs its read-only work (list walk,
+    // decode, divide, pattern fetch) during the sweep. Its first
+    // frame-buffer write holds until the sweep is done (fb_we is registered
+    // and stays up while the engine's cen is low), so the write stream, and
+    // the frame buffer, are exactly what erase-then-render produced:
+    // s32_fbddr still sees the whole sweep and then the pixels in the same
+    // order. An abort or start pulse always reaches the engine.
+    logic e_hold;
+    assign e_hold = (wst == W_ERASE) && e_we && !eng_abort && !eng_start;
     s32_sprite u_eng (
-        .clk(clk), .rst(rst), .cen(cen),
+        .clk(clk), .rst(rst), .cen(cen && !e_hold),
         .ctl08(l08), .ctl0a(l0a), .fb416(l0c), .grp_w7(grp_w7),
         .start(eng_start), .abort(eng_abort), .busy(eng_busy),
         .sr_re(sr_re), .sr_addr(sr_addr), .sr_rdata(sr_rdata),
@@ -281,6 +314,15 @@ module s32_sprite_top (
     assign trig_erase_hidden = (trig_eh_now && cen) || trig_eh_p;
     assign trig_wd           = (wd_now && cen) || wd_p;
 
+    // LIST_DELAY counts clk, not cen: it is time after vblank-out, where
+    // the V60's handler writes the list head, whatever the memory waits.
+    assign ld_load = cen && (trig || trig_wd);
+    always_ff @(posedge clk) begin
+        if (rst)                  ld_cnt <= 16'd0;
+        else if (ld_load)         ld_cnt <= 16'(LIST_DELAY);
+        else if (ld_cnt != 16'd0) ld_cnt <= ld_cnt - 16'd1;
+    end
+
     always_ff @(posedge clk) begin
         if (rst) begin
             r04_tmp <= 2'd0; r04_out <= 2'd0;
@@ -290,11 +332,10 @@ module s32_sprite_top (
             wst <= W_IDLE;
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
-            restart_pend <= 1'b0;
+            ls_pend <= 1'b0;
         end else if (cen) begin
             eng_start <= 1'b0;
             eng_abort <= 1'b0;
-            restart_pend <= 1'b0;
 
             // triggers
             if (trig_swap) begin
@@ -305,12 +346,16 @@ module s32_sprite_top (
                 l0a <= r0a;
                 l0c <= r0c;
             end
-            if (restart_pend) eng_start <= 1'b1;   // engine idle now
+            // the delayed start (LIST_DELAY), once an aborted walk is idle;
+            // a trigger acting this cycle re-arms instead
+            if (ls_pend && ld_cnt == 16'd0 && !eng_busy && !ld_load) begin
+                eng_start <= 1'b1;
+                ls_pend <= 1'b0;
+            end
             if (trig) begin
                 // manual time-out (header): only a manual trigger can find
                 // the engine busy, since auto triggers need W_IDLE. The
-                // engine honors abort before start, so a render that needs
-                // no erase starts on the next cycle.
+                // new walk starts LIST_DELAY later, the old one idle by then.
                 if (eng_busy) eng_abort <= 1'b1;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
@@ -319,21 +364,17 @@ module s32_sprite_top (
                         ? 9'd415 : 9'd319;
                 er_bank <= trig_swap ? shown : ~shown;
                 er_disp <= 1'b0;
-                if (trig_erase_hidden) wst <= W_ERASE;
-                else if (eng_busy) begin
-                    restart_pend <= 1'b1;
-                    wst <= W_RENDER;
-                end else begin
-                    eng_start <= 1'b1;
-                    wst <= W_RENDER;
-                end
+                // the walk runs alongside the sweep (e_hold above)
+                ls_pend <= 1'b1;
+                wst <= trig_erase_hidden ? W_ERASE : W_RENDER;
             end else if (trig_wd) begin
                 // watchdog: abort the job, erase the hidden bank it was
                 // drawing, and render the current list again. No swap,
                 // no flip advance and no latch update (the aborted bank
-                // is never shown). The engine drops busy during the
-                // erase, well before eng_start.
+                // is never shown). The new walk starts LIST_DELAY later,
+                // as after any trigger.
                 eng_abort <= 1'b1;
+                ls_pend <= 1'b1;
                 er_x <= 9'd0;
                 er_y <= 8'd0;
                 er_w <= (r0c || wdirty[~shown]) ? 9'd415 : 9'd319;
@@ -357,10 +398,8 @@ module s32_sprite_top (
                         if (er_w == 9'd415) wdirty[er_bank] <= 1'b0;
                         if (er_disp)
                             wst <= W_IDLE;      // cmd 02: no render
-                        else begin
-                            eng_start <= 1'b1;
-                            wst <= W_RENDER;
-                        end
+                        else
+                            wst <= W_RENDER;    // engine already walking
                     end else
                         er_y <= er_y + 8'd1;
                 end else
@@ -372,7 +411,7 @@ module s32_sprite_top (
             if (wst == W_RENDER && l0c) wdirty[~shown] <= 1'b1;
 
             // render completion
-            if (wst == W_RENDER && !eng_busy && !eng_start && !restart_pend)
+            if (wst == W_RENDER && !eng_busy && !eng_start && !ls_pend)
                 wst <= W_IDLE;
         end
     end

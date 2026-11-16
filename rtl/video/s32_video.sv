@@ -743,6 +743,7 @@ module s32_video (
                 .pf_vld(pfc_vld[zli]), .pf_col(pfc_col[zli]),
                 .pf_addr(pfc_addr[zli]), .pf_next(pfc_next[zli]),
                 .pf_done(), .col(beam_col[zli]),
+                .opaque(r8e[8 + zli]),
                 .pix(zl_pix[zli])
             );
         end
@@ -784,6 +785,7 @@ module s32_video (
                 .win_mode(rl_win_mode[rli]),
                 .win_active(rl_win_act[rli]),
                 .win_lo(rl_win_lo[rli]), .win_hi(rl_win_hi[rli]),
+                .opaque(r8e[10 + rli]),
                 .pix(rl_pix[rli])
             );
         end

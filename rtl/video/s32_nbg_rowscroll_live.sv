@@ -101,6 +101,15 @@ module s32_nbg_rowscroll_live (
     output logic        pf_done,      // line's column sequence exhausted
     output logic [5:0]  col,          // BEAM's current canvas column
 
+    // $31FF8E bit 8 + n for this layer (n = NBG0-3): pen 0 is drawn as
+    // {color, 0} instead of transparent, as MAME's disabled line in
+    // segas32_v.cpp (841/998) reads it, at this layer's own priority.
+    // Board evidence, OPEN-QUESTIONS Q14: Dragon Ball Z's cloud gaps
+    // (NBG2/3, sm23440109) and Rad Rally's course select (NBG1, whose
+    // opaque pens also hide a lower layer's caption copy). A tile with
+    // color 0 still yields 0 and stays transparent in the mixer.
+    input  logic        opaque,
+
     // this layer's line window edges for the beam line (see the header):
     // win_mode = armed (inhibit bit); win_active = this line has a window
     // (no $FFFF word); win_lo/win_hi = inclusive X edges. s32_clip uses them
@@ -398,7 +407,7 @@ module s32_nbg_rowscroll_live (
     assign win_lo     = win_l_beam;
     assign win_hi     = win_r_beam;
 
-    assign pix       = (pen == 4'd0) ? 13'd0 : {name_color, pen};
+    assign pix       = (pen == 4'd0 && !opaque) ? 13'd0 : {name_color, pen};
     assign pix_valid = running;
 
     always_ff @(posedge clk) begin

@@ -14,10 +14,15 @@
 // Bus view (MAME read_xy): offset[1] = X/Y, offset[0] = upper/lower byte.
 //   lower byte = count[7:0]
 //   upper byte = {any-switch, left, right, middle, count[11:8]}
+//   (NEC data sheet IC-3303, Fig. 3 and Table 1, pp.3/5: bits 7-4 = SF, L,
+//   R, M; the switch inputs are active low, the status bits active high,
+//   and the inputs have no pull-ups, input current +-1 uA, p.9.)
 // SegaSonic's buttons are on the 315-5296, not on these switch inputs, so the
 // switch bits read 0 (inputs inactive), as MAME has them. The game reads only
 // the lower bytes. (A reproduction board's artwork ties pins 7-9 to GND, which
-// would read $F0 | count[11:8] by MAME's polarity; unconfirmed, Q50.)
+// by the data sheet would read $F0 | count[11:8]; the real 837-8685's wiring
+// of those pins is unconfirmed, Q50. Sega's 1988 Hot Rod I/O board, 834-6510,
+// ties them to the supply, which reads $0x as here.)
 // A write resets both axes of this chip only: the board NORs its '138 write
 // output with /VLWR into RESET X and RESET Y together (Q50, 2026-11-07;
 // MAME reset_xy_w).
