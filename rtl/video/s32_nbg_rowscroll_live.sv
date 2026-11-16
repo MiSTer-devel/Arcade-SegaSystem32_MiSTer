@@ -75,7 +75,11 @@ module s32_nbg_rowscroll_live (
     // walk and the pattern prefetch are skipped (their data can never
     // reach the screen), but every per-line latch still runs on
     // row_start, so the layer resumes exactly when re-enabled
-    // (2026-10-19, docs/svf-bringup.md section 6.8).
+    // (2026-10-19, docs/svf-bringup.md section 6.8). Exception: with the
+    // line window armed, the two table words (the window's edges) are
+    // still read, because the span clips other layers; ga2's cave torch
+    // draws through NBG2's table while NBG2 is off (docs/cave-torch-line-
+    // window.md, 2026-11-15).
     input  logic        walk_en,
     input  logic        vr_ok,        // walk grant, not paused
     output logic        vr_busy,
@@ -215,7 +219,13 @@ module s32_nbg_rowscroll_live (
                 // window mode indexes the table by the GLOBAL flip only
                 // (MAME `line = flip ? visarea.max_y - y : y`)
                 tlookup <= (win_en ? gflip : flipy) ? (8'd223 - line) : line;
-                wst     <= !walk_en ? W_IDLE
+                // A disabled layer with its line window armed still reads
+                // the two table words: they are clip window 2/3's span for
+                // EVERY layer that selects the window, not this layer's
+                // pixels (ga2's cave torch: NBG2 off in play, its table
+                // shapes NBG3's fill). W_SET then ends the walk before the
+                // names (2026-11-15; the 2026-10-19 skip had dropped them).
+                wst     <= (!walk_en && !win_en) ? W_IDLE
                          : read_h ? W_TH
                          : read_v ? W_TV : W_SET;
             end else if (vr_ok) begin
@@ -251,7 +261,7 @@ module s32_nbg_rowscroll_live (
                         // rowscroll_en/rowselect_en are both 0 when win_en.
                         if (win_en) win_l <= {1'b0, h_saved[8:0]};
                         widx <= 7'd0;
-                        wst  <= W_NAMES;
+                        wst  <= walk_en ? W_NAMES : W_IDLE;  // disabled: edges only
                         // snapshot this line's final geometry into the bank
                         // the walk is filling (walk_bank stable = line[0]), so
                         // the beam reads it via show_bank alongside nrow.
